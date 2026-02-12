@@ -10,7 +10,7 @@
 ## Installation
 
 ```bash
-npm install garch-ts
+npm install garch
 ```
 
 ## Usage
