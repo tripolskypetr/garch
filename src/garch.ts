@@ -94,7 +94,7 @@ export class Garch {
     const unconditionalVariance = omega / (1 - persistence);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
-    const logLikelihood = -result.fx * 2;
+    const logLikelihood = -result.fx;
     const numParams = 3;
 
     return {

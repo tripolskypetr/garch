@@ -112,7 +112,7 @@ export class Egarch {
     const unconditionalVariance = Math.exp(unconditionalLogVar);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
-    const logLikelihood = -result.fx * 2;
+    const logLikelihood = -result.fx;
     const numParams = 4;
 
     return {
