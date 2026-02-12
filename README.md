@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./assets/logo.png" height="115px" alt="garch" />
+  <img src="https://github.com/tripolskypetr/garch/raw/master/assets/logo.png" height="115px" alt="garch" />
 </p>
 
 <p align="center">

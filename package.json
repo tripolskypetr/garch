@@ -1,6 +1,6 @@
 {
   "name": "garch",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "GARCH and EGARCH volatility models for TypeScript",
   "type": "module",
   "main": "./build/index.cjs",
