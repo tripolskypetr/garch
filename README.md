@@ -18,7 +18,7 @@ npm install garch-ts
 ### GARCH(1,1)
 
 ```typescript
-import { calibrateGarch, Garch } from 'garch-ts';
+import { calibrateGarch, Garch } from 'garch';
 
 // From price array
 const prices = [100, 101, 99, 102, 98, ...];
@@ -51,7 +51,7 @@ console.log(forecast.annualized); // [32.1, 31.9, 31.8, ...]
 EGARCH captures asymmetric volatility (leverage effect):
 
 ```typescript
-import { calibrateEgarch, Egarch, checkLeverageEffect } from 'garch-ts';
+import { calibrateEgarch, Egarch, checkLeverageEffect } from 'garch';
 
 // Check if EGARCH is warranted
 const returns = calculateReturnsFromPrices(prices);
@@ -77,7 +77,7 @@ console.log(result.params);
 ### From OHLCV Candles
 
 ```typescript
-import { Candle, calibrateGarch } from 'garch-ts';
+import { Candle, calibrateGarch } from 'garch';
 
 const candles: Candle[] = [
   { open: 100, high: 102, low: 99, close: 101, volume: 1000 },
@@ -91,7 +91,7 @@ const result = calibrateGarch(candles);
 ### Model Selection
 
 ```typescript
-import { calibrateGarch, calibrateEgarch } from 'garch-ts';
+import { calibrateGarch, calibrateEgarch } from 'garch';
 
 const garch = calibrateGarch(prices);
 const egarch = calibrateEgarch(prices);
@@ -188,14 +188,19 @@ ln(σ²ₜ) = ω + α·(|zₜ₋₁| - E[|z|]) + γ·zₜ₋₁ + β·ln(σ²ₜ
 - No positivity constraints needed (models log-variance)
 - `|β|` < 1 for stationarity
 
-## Diagnostics
+### Model Selection
 
-Both models return:
-- `logLikelihood`: Maximized log-likelihood
-- `aic`: Akaike Information Criterion
-- `bic`: Bayesian Information Criterion
-- `converged`: Whether optimizer converged
-- `iterations`: Number of optimizer iterations
+```typescript
+import { calibrateGarch, calibrateEgarch } from 'garch';
+
+const garch = calibrateGarch(prices);
+const egarch = calibrateEgarch(prices);
+
+// Compare using AIC (lower is better)
+if (egarch.diagnostics.aic < garch.diagnostics.aic) {
+  console.log('EGARCH fits better — leverage effect is significant');
+}
+```
 
 ## License
 
