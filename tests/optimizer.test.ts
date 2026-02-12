@@ -75,4 +75,43 @@ describe('nelderMead', () => {
 
     expect(tightTol.iterations).toBeGreaterThanOrEqual(looseTol.iterations);
   });
+
+  it('should converge quickly when starting near optimum', () => {
+    function quadratic(x: number[]): number {
+      return (x[0] - 3) ** 2 + (x[1] + 2) ** 2;
+    }
+
+    const result = nelderMead(quadratic, [3.001, -2.001], { tol: 1e-6 });
+
+    expect(result.converged).toBe(true);
+    expect(result.iterations).toBeLessThan(50);
+    expect(result.x[0]).toBeCloseTo(3, 2);
+    expect(result.x[1]).toBeCloseTo(-2, 2);
+  });
+
+  it('should find local minimum of non-convex function', () => {
+    // Rastrigin: global min at origin, many local minima
+    function rastrigin(x: number[]): number {
+      return 20
+        + (x[0] ** 2 - 10 * Math.cos(2 * Math.PI * x[0]))
+        + (x[1] ** 2 - 10 * Math.cos(2 * Math.PI * x[1]));
+    }
+
+    const x0 = [3.5, 4.5];
+    const result = nelderMead(rastrigin, x0, { maxIter: 5000 });
+
+    expect(result.fx).toBeLessThan(rastrigin(x0));
+    expect(result.converged).toBe(true);
+  });
+
+  it('should handle 10D optimization', () => {
+    function sphere(x: number[]): number {
+      return x.reduce((s, v) => s + v * v, 0);
+    }
+
+    const x0 = Array.from({ length: 10 }, (_, i) => (i + 1) * 0.1);
+    const result = nelderMead(sphere, x0, { maxIter: 50000, tol: 1e-6 });
+
+    expect(result.fx).toBeLessThan(sphere(x0) * 0.01);
+  });
 });

@@ -6,7 +6,7 @@ import type { Candle, LeverageStats } from './types.js';
 export function calculateReturns(candles: Candle[]): number[] {
   const returns: number[] = [];
   for (let i = 1; i < candles.length; i++) {
-    if (candles[i].close <= 0 || candles[i - 1].close <= 0) {
+    if (!(candles[i].close > 0) || !(candles[i - 1].close > 0)) {
       throw new Error(`Invalid close price at index ${i}`);
     }
     returns.push(Math.log(candles[i].close / candles[i - 1].close));
@@ -20,7 +20,7 @@ export function calculateReturns(candles: Candle[]): number[] {
 export function calculateReturnsFromPrices(prices: number[]): number[] {
   const returns: number[] = [];
   for (let i = 1; i < prices.length; i++) {
-    if (prices[i] <= 0 || prices[i - 1] <= 0) {
+    if (!(prices[i] > 0 && Number.isFinite(prices[i])) || !(prices[i - 1] > 0 && Number.isFinite(prices[i - 1]))) {
       throw new Error(`Invalid price at index ${i}`);
     }
     returns.push(Math.log(prices[i] / prices[i - 1]));
