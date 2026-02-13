@@ -18,6 +18,19 @@ const INTERVAL_MINUTES: Record<CandleInterval, number> = {
   '8h': 480,
 };
 
+const MIN_CANDLES: Record<CandleInterval, number> = {
+  '1m': 500,
+  '3m': 500,
+  '5m': 500,
+  '15m': 300,
+  '30m': 200,
+  '1h': 200,
+  '2h': 200,
+  '4h': 200,
+  '6h': 150,
+  '8h': 150,
+};
+
 const INTERVALS_PER_YEAR: Record<CandleInterval, number> = {
   '1m': 525_600,
   '3m': 175_200,
@@ -39,6 +52,13 @@ export interface PredictionResult {
   lowerPrice: number;
   modelType: 'garch' | 'egarch';
   reliable: boolean;
+}
+
+function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
+  const min = MIN_CANDLES[interval];
+  if (candles.length < min) {
+    throw new Error(`Need at least ${min} candles for ${interval} interval, got ${candles.length}`);
+  }
 }
 
 interface FitResult {
@@ -103,6 +123,7 @@ export function predict(
   interval: CandleInterval,
   currentPrice = candles[candles.length - 1].close,
 ): PredictionResult {
+  assertMinCandles(candles, interval);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], 1);
 
   const sigma = fit.forecast.volatility[0];
@@ -131,6 +152,7 @@ export function predictRange(
   steps: number,
   currentPrice = candles[candles.length - 1].close,
 ): PredictionResult {
+  assertMinCandles(candles, interval);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], steps);
 
   const cumulativeVariance = fit.forecast.variance.reduce((sum, v) => sum + v, 0);
@@ -151,15 +173,13 @@ export function predictRange(
 // ── Backtest ──────────────────────────────────────────────────
 
 const BACKTEST_REQUIRED_PERCENT = 68;
-const BACKTEST_MIN_WINDOW = 50;
-const BACKTEST_MIN_POINTS = 10;
 const BACKTEST_WINDOW_RATIO = 0.75;
 
 /**
  * Walk-forward backtest of predict.
  *
  * Window is computed automatically: 75% of candles for fitting, 25% for testing.
- * Throws if fewer than 61 candles (50 min window + 10 test points + 1).
+ * Throws if not enough candles for the given interval.
  * Returns true if the model's hit rate meets the required threshold.
  * Default threshold is 68% (±1σ should contain ~68% of moves).
  */
@@ -168,12 +188,9 @@ export function backtest(
   interval: CandleInterval,
   requiredPercent = BACKTEST_REQUIRED_PERCENT,
 ): boolean {
-  const minCandles = BACKTEST_MIN_WINDOW + BACKTEST_MIN_POINTS + 1;
-  if (candles.length < minCandles) {
-    throw new Error(`Need at least ${minCandles} candles for backtest, got ${candles.length}`);
-  }
+  assertMinCandles(candles, interval);
 
-  const window = Math.max(BACKTEST_MIN_WINDOW, Math.floor(candles.length * BACKTEST_WINDOW_RATIO));
+  const window = Math.max(MIN_CANDLES[interval], Math.floor(candles.length * BACKTEST_WINDOW_RATIO));
   let hits = 0;
   let total = 0;
 

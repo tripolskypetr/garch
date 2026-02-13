@@ -700,18 +700,18 @@ describe('backtest', () => {
   }
 
   it('returns boolean', () => {
-    const candles = makeCandles(120);
+    const candles = makeCandles(250);
     const result = backtest(candles, '4h');
     expect(typeof result).toBe('boolean');
   });
 
   it('throws when not enough candles', () => {
-    const candles = makeCandles(50);
-    expect(() => backtest(candles, '4h')).toThrow('Need at least 61 candles');
+    const candles = makeCandles(100);
+    expect(() => backtest(candles, '4h')).toThrow('Need at least 200 candles for 4h interval');
   });
 
   it('accepts custom requiredPercent', () => {
-    const candles = makeCandles(120);
+    const candles = makeCandles(250);
     // With 0% threshold, should always pass
     expect(backtest(candles, '4h', 0)).toBe(true);
     // With 100% threshold, very unlikely to pass
@@ -740,7 +740,7 @@ describe('predictMultiTimeframe', () => {
 
   it('returns primary and secondary predictions', () => {
     const candles4h = makeCandles(200, 111);
-    const candles15m = makeCandles(200, 222);
+    const candles15m = makeCandles(300, 222);
     const result = predictMultiTimeframe(candles4h, '4h', candles15m, '15m');
     expect(result.primary).toHaveProperty('sigma');
     expect(result.secondary).toHaveProperty('sigma');
@@ -749,7 +749,7 @@ describe('predictMultiTimeframe', () => {
 
   it('accepts currentPrice override', () => {
     const candles4h = makeCandles(200, 111);
-    const candles15m = makeCandles(200, 222);
+    const candles15m = makeCandles(300, 222);
     const result = predictMultiTimeframe(candles4h, '4h', candles15m, '15m', 50000);
     expect(result.primary.currentPrice).toBe(50000);
     expect(result.secondary.currentPrice).toBe(50000);
