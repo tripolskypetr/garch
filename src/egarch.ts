@@ -4,7 +4,7 @@ import {
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
-  garmanKlassVariance,
+  yangZhangVariance,
   calculateAIC,
   calculateBIC,
   EXPECTED_ABS_NORMAL,
@@ -47,7 +47,7 @@ export class Egarch {
     } else {
       const candles = data as Candle[];
       this.returns = calculateReturns(candles);
-      this.initialVariance = garmanKlassVariance(candles);
+      this.initialVariance = yangZhangVariance(candles);
     }
   }
 

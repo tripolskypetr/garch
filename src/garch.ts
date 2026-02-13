@@ -4,7 +4,7 @@ import {
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
-  garmanKlassVariance,
+  yangZhangVariance,
   calculateAIC,
   calculateBIC,
 } from './utils.js';
@@ -45,7 +45,7 @@ export class Garch {
     } else {
       const candles = data as Candle[];
       this.returns = calculateReturns(candles);
-      this.initialVariance = garmanKlassVariance(candles);
+      this.initialVariance = yangZhangVariance(candles);
     }
   }
 

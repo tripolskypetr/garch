@@ -94,10 +94,106 @@ export function garmanKlassVariance(candles: Candle[]): number {
 }
 
 /**
+ * Yang-Zhang (2000) variance estimator using OHLC data.
+ *
+ * Combines overnight (open vs prev close), open-to-close,
+ * and Rogers-Satchell components. More efficient than Garman-Klass
+ * and handles overnight gaps (relevant for stocks).
+ *
+ * σ²_YZ = σ²_overnight + k·σ²_close + (1−k)·σ²_RS
+ */
+export function yangZhangVariance(candles: Candle[]): number {
+  const n = candles.length;
+  if (n < 2) return garmanKlassVariance(candles);
+
+  const k = 0.34 / (1.34 + (n + 1) / (n - 1));
+
+  let overnightSum = 0;
+  let closeSum = 0;
+  let rsSum = 0;
+  let count = 0;
+
+  for (let i = 1; i < n; i++) {
+    const prevClose = candles[i - 1].close;
+    const { open, high, low, close } = candles[i];
+
+    const overnight = Math.log(open / prevClose);
+    const co = Math.log(close / open);
+    const hc = Math.log(high / close);
+    const ho = Math.log(high / open);
+    const lc = Math.log(low / close);
+    const lo = Math.log(low / open);
+
+    overnightSum += overnight * overnight;
+    closeSum += co * co;
+    rsSum += ho * hc + lo * lc;
+    count++;
+  }
+
+  const overnightVar = overnightSum / count;
+  const closeVar = closeSum / count;
+  const rsVar = rsSum / count;
+
+  return overnightVar + k * closeVar + (1 - k) * rsVar;
+}
+
+/**
  * Expected value of |Z| where Z ~ N(0,1)
  * E[|Z|] = sqrt(2/π)
  */
 export const EXPECTED_ABS_NORMAL = Math.sqrt(2 / Math.PI);
+
+/**
+ * Chi-squared survival function approximation (Wilson-Hilferty).
+ * P(X > x) where X ~ χ²(df)
+ */
+export function chi2Survival(x: number, df: number): number {
+  if (df <= 0 || x < 0) return 1;
+  // Wilson-Hilferty normal approximation
+  const z = Math.cbrt(x / df) - (1 - 2 / (9 * df));
+  const denom = Math.sqrt(2 / (9 * df));
+  const normZ = z / denom;
+  // Standard normal CDF via error function approximation
+  return 1 - normalCDF(normZ);
+}
+
+function normalCDF(x: number): number {
+  const t = 1 / (1 + 0.2316419 * Math.abs(x));
+  const d = 0.3989422804014327; // 1/sqrt(2π)
+  const p = d * Math.exp(-0.5 * x * x) *
+    (t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429)))));
+  return x >= 0 ? 1 - p : p;
+}
+
+/**
+ * Ljung-Box test for autocorrelation.
+ *
+ * Q = n(n+2) Σ(k=1..m) ρ²_k / (n−k)
+ *
+ * Under H₀ (no autocorrelation), Q ~ χ²(m).
+ * Use on squared standardized residuals to test GARCH adequacy.
+ */
+export function ljungBox(data: number[], maxLag: number): { statistic: number; pValue: number } {
+  const n = data.length;
+  const mean = data.reduce((s, v) => s + v, 0) / n;
+  const gamma0 = data.reduce((s, v) => s + (v - mean) ** 2, 0) / n;
+
+  if (gamma0 === 0) return { statistic: 0, pValue: 1 };
+
+  let Q = 0;
+  for (let k = 1; k <= maxLag; k++) {
+    let gammaK = 0;
+    for (let t = k; t < n; t++) {
+      gammaK += (data[t] - mean) * (data[t - k] - mean);
+    }
+    gammaK /= n;
+    const rhoK = gammaK / gamma0;
+    Q += (rhoK * rhoK) / (n - k);
+  }
+  Q *= n * (n + 2);
+
+  return { statistic: Q, pValue: chi2Survival(Q, maxLag) };
+}
 
 /**
  * Calculate AIC (Akaike Information Criterion)

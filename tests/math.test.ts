@@ -9,9 +9,14 @@ import {
   sampleVariance,
   sampleVarianceWithMean,
   garmanKlassVariance,
+  yangZhangVariance,
+  ljungBox,
+  predict,
+  predictRange,
   EXPECTED_ABS_NORMAL,
 } from '../src/index.js';
 import { calculateAIC, calculateBIC } from '../src/utils.js';
+import type { Candle } from '../src/index.js';
 
 // ── helpers ──────────────────────────────────────────────────
 
@@ -437,5 +442,156 @@ describe('AIC and BIC', () => {
 
     expect(aic).toBeCloseTo(2 * k - 2 * logLikelihood, 6);
     expect(bic).toBeCloseTo(k * Math.log(n) - 2 * logLikelihood, 6);
+  });
+});
+
+// ── 12. Yang-Zhang variance ───────────────────────────────────
+
+describe('yangZhangVariance', () => {
+  it('returns positive number for valid candles', () => {
+    const candles: Candle[] = [
+      { open: 100, high: 105, low: 98, close: 103, volume: 1000 },
+      { open: 103, high: 107, low: 101, close: 102, volume: 1200 },
+      { open: 102, high: 108, low: 100, close: 106, volume: 900 },
+      { open: 106, high: 110, low: 104, close: 105, volume: 1100 },
+    ];
+    const yz = yangZhangVariance(candles);
+    expect(yz).toBeGreaterThan(0);
+    expect(Number.isFinite(yz)).toBe(true);
+  });
+
+  it('same order of magnitude as sampleVariance', () => {
+    const candles: Candle[] = [
+      { open: 100, high: 102, low: 99, close: 101, volume: 1000 },
+      { open: 101, high: 104, low: 100, close: 103, volume: 1200 },
+      { open: 103, high: 105, low: 101, close: 102, volume: 900 },
+      { open: 102, high: 106, low: 100, close: 104, volume: 1100 },
+      { open: 104, high: 107, low: 102, close: 105, volume: 950 },
+    ];
+    const returns = calculateReturns(candles);
+    const sv = sampleVariance(returns);
+    const yz = yangZhangVariance(candles);
+
+    expect(yz / sv).toBeGreaterThan(0.1);
+    expect(yz / sv).toBeLessThan(10);
+  });
+
+  it('falls back to garmanKlass for single candle', () => {
+    const candles: Candle[] = [
+      { open: 100, high: 110, low: 90, close: 105, volume: 1000 },
+    ];
+    expect(yangZhangVariance(candles)).toBe(garmanKlassVariance(candles));
+  });
+});
+
+// ── 13. Ljung-Box test ────────────────────────────────────────
+
+describe('ljungBox', () => {
+  it('white noise has high p-value', () => {
+    // Deterministic "white noise" via LCG
+    let state = 42;
+    const data: number[] = [];
+    for (let i = 0; i < 500; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      data.push((state / 0x7fffffff) - 0.5);
+    }
+    const result = ljungBox(data, 10);
+    expect(result.pValue).toBeGreaterThan(0.05);
+  });
+
+  it('autocorrelated series has low p-value', () => {
+    // AR(1) with rho=0.9
+    const data: number[] = [0];
+    let state = 123;
+    for (let i = 1; i < 500; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      const noise = ((state / 0x7fffffff) - 0.5) * 0.1;
+      data.push(0.9 * data[i - 1] + noise);
+    }
+    const result = ljungBox(data, 10);
+    expect(result.pValue).toBeLessThan(0.05);
+  });
+
+  it('statistic is non-negative', () => {
+    const data = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    const result = ljungBox(data, 3);
+    expect(result.statistic).toBeGreaterThanOrEqual(0);
+    expect(result.pValue).toBeGreaterThanOrEqual(0);
+    expect(result.pValue).toBeLessThanOrEqual(1);
+  });
+});
+
+// ── 14. predict reliable flag ─────────────────────────────────
+
+describe('predict reliable flag', () => {
+  function makeCandles(n: number, seed = 12345): Candle[] {
+    const candles: Candle[] = [];
+    let state = seed;
+    let price = 100;
+    for (let i = 0; i < n; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      const r = ((state / 0x7fffffff) - 0.5) * 0.04;
+      const close = price * Math.exp(r);
+      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.5);
+      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.5);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+    return candles;
+  }
+
+  it('returns reliable: true for well-behaved data', () => {
+    const candles = makeCandles(200);
+    const result = predict(candles, '4h');
+    expect(typeof result.reliable).toBe('boolean');
+  });
+
+  it('returns all expected fields', () => {
+    const candles = makeCandles(200);
+    const result = predict(candles, '4h');
+    expect(result).toHaveProperty('currentPrice');
+    expect(result).toHaveProperty('sigma');
+    expect(result).toHaveProperty('move');
+    expect(result).toHaveProperty('upperPrice');
+    expect(result).toHaveProperty('lowerPrice');
+    expect(result).toHaveProperty('modelType');
+    expect(result).toHaveProperty('reliable');
+  });
+});
+
+// ── 15. predictRange ──────────────────────────────────────────
+
+describe('predictRange', () => {
+  function makeCandles(n: number, seed = 12345): Candle[] {
+    const candles: Candle[] = [];
+    let state = seed;
+    let price = 100;
+    for (let i = 0; i < n; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      const r = ((state / 0x7fffffff) - 0.5) * 0.04;
+      const close = price * Math.exp(r);
+      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.5);
+      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.5);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+    return candles;
+  }
+
+  it('cumulative sigma > single-step sigma', () => {
+    const candles = makeCandles(200);
+    const single = predict(candles, '4h');
+    const multi = predictRange(candles, '4h', 5);
+    expect(multi.sigma).toBeGreaterThan(single.sigma);
+    expect(multi.move).toBeGreaterThan(single.move);
+  });
+
+  it('wider corridor than single-step', () => {
+    const candles = makeCandles(200);
+    const single = predict(candles, '4h');
+    const multi = predictRange(candles, '4h', 10);
+    expect(multi.upperPrice - multi.lowerPrice).toBeGreaterThan(
+      single.upperPrice - single.lowerPrice,
+    );
   });
 });
