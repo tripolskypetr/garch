@@ -16,7 +16,16 @@ export {
 } from './utils.js';
 
 // Prediction
-export { predict, predictRange, type CandleInterval, type PredictionResult } from './predict.js';
+export {
+  predict,
+  predictRange,
+  backtest,
+  predictMultiTimeframe,
+  type CandleInterval,
+  type PredictionResult,
+  type BacktestResult,
+  type MultiTimeframePrediction,
+} from './predict.js';
 
 // Optimizer (for advanced usage)
 export { nelderMead } from './optimizer.js';

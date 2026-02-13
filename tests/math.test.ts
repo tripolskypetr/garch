@@ -13,6 +13,8 @@ import {
   ljungBox,
   predict,
   predictRange,
+  backtest,
+  predictMultiTimeframe,
   EXPECTED_ABS_NORMAL,
 } from '../src/index.js';
 import { calculateAIC, calculateBIC, chi2Survival } from '../src/utils.js';
@@ -675,5 +677,107 @@ describe('predict egarch branch', () => {
     const result = predict(candles, '4h');
     expect(result.modelType).toBe('egarch');
     expect(result.sigma).toBeGreaterThan(0);
+  });
+});
+
+// ── 18. backtest ──────────────────────────────────────────────
+
+describe('backtest', () => {
+  function makeCandles(n: number, seed = 12345): Candle[] {
+    const candles: Candle[] = [];
+    let state = seed;
+    let price = 100;
+    for (let i = 0; i < n; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      const r = ((state / 0x7fffffff) - 0.5) * 0.04;
+      const close = price * Math.exp(r);
+      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.5);
+      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.5);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+    return candles;
+  }
+
+  it('returns correct total count', () => {
+    const candles = makeCandles(120);
+    const result = backtest(candles, '4h', 60);
+    // window=60, so predictions from index 60 to 118 (candles.length - 2)
+    expect(result.total).toBe(candles.length - 1 - 60);
+    expect(result.predictions).toHaveLength(result.total);
+  });
+
+  it('hitRate is between 0 and 1', () => {
+    const candles = makeCandles(120);
+    const result = backtest(candles, '4h', 60);
+    expect(result.hitRate).toBeGreaterThanOrEqual(0);
+    expect(result.hitRate).toBeLessThanOrEqual(1);
+  });
+
+  it('hits <= total', () => {
+    const candles = makeCandles(120);
+    const result = backtest(candles, '4h', 60);
+    expect(result.hits).toBeLessThanOrEqual(result.total);
+    expect(result.hits).toBeGreaterThanOrEqual(0);
+  });
+
+  it('predictions contain actual close prices', () => {
+    const candles = makeCandles(80);
+    const result = backtest(candles, '4h', 55);
+    for (let i = 0; i < result.predictions.length; i++) {
+      const idx = 55 + 1 + i; // actual candle index
+      expect(result.predictions[i].actual).toBe(candles[idx].close);
+    }
+  });
+
+  it('returns zero total when window equals candles length minus 1', () => {
+    const candles = makeCandles(61);
+    const result = backtest(candles, '4h', 60);
+    expect(result.total).toBe(0);
+    expect(result.hitRate).toBe(0);
+  });
+});
+
+// ── 19. predictMultiTimeframe ─────────────────────────────────
+
+describe('predictMultiTimeframe', () => {
+  function makeCandles(n: number, seed = 12345): Candle[] {
+    const candles: Candle[] = [];
+    let state = seed;
+    let price = 100;
+    for (let i = 0; i < n; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      const r = ((state / 0x7fffffff) - 0.5) * 0.04;
+      const close = price * Math.exp(r);
+      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.5);
+      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.5);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+    return candles;
+  }
+
+  it('returns primary and secondary predictions', () => {
+    const candles4h = makeCandles(200, 111);
+    const candles15m = makeCandles(200, 222);
+    const result = predictMultiTimeframe(candles4h, '4h', candles15m, '15m');
+    expect(result.primary).toHaveProperty('sigma');
+    expect(result.secondary).toHaveProperty('sigma');
+    expect(typeof result.divergence).toBe('boolean');
+  });
+
+  it('accepts currentPrice override', () => {
+    const candles4h = makeCandles(200, 111);
+    const candles15m = makeCandles(200, 222);
+    const result = predictMultiTimeframe(candles4h, '4h', candles15m, '15m', 50000);
+    expect(result.primary.currentPrice).toBe(50000);
+    expect(result.secondary.currentPrice).toBe(50000);
+  });
+
+  it('detects divergence when timeframes disagree', () => {
+    // Same data, same seed — similar vol, no divergence expected
+    const candles = makeCandles(200, 333);
+    const result = predictMultiTimeframe(candles, '4h', candles, '4h');
+    expect(result.divergence).toBe(false);
   });
 });

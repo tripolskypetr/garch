@@ -244,6 +244,45 @@ const range = predictRange(candles, '4h', 5);
 const range = predictRange(candles, '4h', 5, vwap);
 ```
 
+### backtest
+
+Walk-forward validation of `predict`. Slides a window across historical candles, calls predict at each step, checks if the next candle's close landed within ±1σ corridor. Hit rate should be ~68% if the model is well-calibrated.
+
+```typescript
+import { backtest } from 'garch';
+
+const candles = await fetchCandles('BTCUSDT', '4h', 500);
+
+const result = backtest(candles, '4h', 200); // window = 200 candles per fit
+// {
+//   total: 299,       // number of predictions
+//   hits: 210,        // times actual was within corridor
+//   hitRate: 0.702,   // ~70% — model is well-calibrated
+//   predictions: [{ predicted: PredictionResult, actual: number }, ...]
+// }
+```
+
+### predictMultiTimeframe
+
+Compare volatility forecasts across two timeframes. Normalizes both σ to per-hour and detects divergence (one timeframe sees 2x+ more vol than the other). Separate entry point — does not modify `predict` or `predictRange`.
+
+```typescript
+import { predictMultiTimeframe } from 'garch';
+
+const candles4h = await fetchCandles('BTCUSDT', '4h', 200);
+const candles15m = await fetchCandles('BTCUSDT', '15m', 300);
+
+const result = predictMultiTimeframe(candles4h, '4h', candles15m, '15m');
+// {
+//   primary: PredictionResult,    // 4h forecast
+//   secondary: PredictionResult,  // 15m forecast
+//   divergence: true              // timeframes disagree on vol
+// }
+
+// divergence = true → one tf sees calm, the other sees storm
+// useful as a filter: skip entry when timeframes diverge
+```
+
 ## Model Details
 
 ### GARCH(1,1)

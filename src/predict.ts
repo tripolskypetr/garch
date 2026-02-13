@@ -5,6 +5,19 @@ import { calculateReturnsFromPrices, checkLeverageEffect, ljungBox } from './uti
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
 
+const INTERVAL_MINUTES: Record<CandleInterval, number> = {
+  '1m': 1,
+  '3m': 3,
+  '5m': 5,
+  '15m': 15,
+  '30m': 30,
+  '1h': 60,
+  '2h': 120,
+  '4h': 240,
+  '6h': 360,
+  '8h': 480,
+};
+
 const INTERVALS_PER_YEAR: Record<CandleInterval, number> = {
   '1m': 525_600,
   '3m': 175_200,
@@ -133,4 +146,92 @@ export function predictRange(
     lowerPrice: currentPrice - move,
     reliable: checkReliable(fit),
   };
+}
+
+// ── Backtest ──────────────────────────────────────────────────
+
+export interface BacktestResult {
+  total: number;
+  hits: number;
+  hitRate: number;
+  predictions: { predicted: PredictionResult; actual: number }[];
+}
+
+/**
+ * Walk-forward backtest of predict.
+ *
+ * Slides a window across candles, calls predict at each step,
+ * checks if the next candle's close lands within ±1σ corridor.
+ * Hit rate should be ~68% if the model is well-calibrated.
+ */
+export function backtest(
+  candles: Candle[],
+  interval: CandleInterval,
+  window: number,
+): BacktestResult {
+  const predictions: BacktestResult['predictions'] = [];
+  let hits = 0;
+
+  for (let i = window; i < candles.length - 1; i++) {
+    const slice = candles.slice(i - window, i + 1);
+    const predicted = predict(slice, interval);
+    const actual = candles[i + 1].close;
+
+    if (actual >= predicted.lowerPrice && actual <= predicted.upperPrice) {
+      hits++;
+    }
+
+    predictions.push({ predicted, actual });
+  }
+
+  const total = predictions.length;
+
+  return {
+    total,
+    hits,
+    hitRate: total > 0 ? hits / total : 0,
+    predictions,
+  };
+}
+
+// ── Multi-timeframe ───────────────────────────────────────────
+
+export interface MultiTimeframePrediction {
+  primary: PredictionResult;
+  secondary: PredictionResult;
+  divergence: boolean;
+}
+
+/**
+ * Compare volatility forecasts across two timeframes.
+ *
+ * Normalizes both σ to per-hour and checks for divergence.
+ * divergence = true when one timeframe sees 2x+ more vol than the other.
+ */
+export function predictMultiTimeframe(
+  primaryCandles: Candle[],
+  primaryInterval: CandleInterval,
+  secondaryCandles: Candle[],
+  secondaryInterval: CandleInterval,
+  currentPrice?: number,
+): MultiTimeframePrediction {
+  const primary = predict(
+    primaryCandles,
+    primaryInterval,
+    currentPrice ?? primaryCandles[primaryCandles.length - 1].close,
+  );
+  const secondary = predict(
+    secondaryCandles,
+    secondaryInterval,
+    currentPrice ?? secondaryCandles[secondaryCandles.length - 1].close,
+  );
+
+  // Normalize σ to hourly: σ_hourly = σ_candle * √(60 / minutes_per_candle)
+  const primaryHourly = primary.sigma * Math.sqrt(60 / INTERVAL_MINUTES[primaryInterval]);
+  const secondaryHourly = secondary.sigma * Math.sqrt(60 / INTERVAL_MINUTES[secondaryInterval]);
+
+  const ratio = primaryHourly / secondaryHourly;
+  const divergence = ratio > 2 || ratio < 0.5;
+
+  return { primary, secondary, divergence };
 }
