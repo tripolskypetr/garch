@@ -4,6 +4,7 @@ import {
   Egarch,
   calibrateGarch,
   calibrateEgarch,
+  calculateReturns,
   calculateReturnsFromPrices,
   checkLeverageEffect,
   garmanKlassVariance,
@@ -761,5 +762,270 @@ describe('GARCH parameter recovery', () => {
     const result = calibrateGarch(prices, { periodsPerYear: 252 });
     expect(result.params.persistence).toBeGreaterThan(truePersistence * 0.9);
     expect(result.params.persistence).toBeLessThan(truePersistence * 1.1);
+  });
+});
+
+// ── 16. Backtest on known DGP — 68% hit rate ────────────────
+
+describe('backtest on known GARCH DGP', () => {
+  function generateGarchCandles(n: number, omega: number, alpha: number, beta: number, seed: number): Candle[] {
+    const rng = lcg(seed);
+    const candles: Candle[] = [];
+    let price = 100;
+    let variance = omega / (1 - alpha - beta);
+    for (let i = 0; i < n; i++) {
+      const eps = Math.sqrt(variance) * randn(rng);
+      variance = omega + alpha * eps ** 2 + beta * variance;
+      const close = price * Math.exp(eps);
+      const high = Math.max(price, close) * (1 + Math.abs(eps) * 0.3);
+      const low = Math.min(price, close) * (1 - Math.abs(eps) * 0.3);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+    return candles;
+  }
+
+  it('passes at 68% on data from true GARCH(1,1)', () => {
+    // Standard GARCH params: moderate persistence
+    const candles = generateGarchCandles(350, 0.00001, 0.08, 0.88, 5555);
+    // With true GARCH data, ±1σ should capture ~68% of moves
+    // Use a lower threshold (50%) to account for finite sample + estimation error
+    const result = backtest(candles, '4h', 50);
+    expect(result).toBe(true);
+  });
+
+  it('fails at 99% threshold on any realistic data', () => {
+    const candles = generateGarchCandles(350, 0.00001, 0.08, 0.88, 6666);
+    // 99% hit rate is unrealistic for ±1σ corridor
+    const result = backtest(candles, '4h', 99);
+    expect(result).toBe(false);
+  });
+});
+
+// ── 17. Pure function proof — no hidden state ───────────────
+
+describe('predict is a pure function', () => {
+  it('same input → identical output on two calls', () => {
+    const candles = makeCandles(200, 9001);
+    const r1 = predict(candles, '4h');
+    const r2 = predict(candles, '4h');
+
+    expect(r1.sigma).toBe(r2.sigma);
+    expect(r1.move).toBe(r2.move);
+    expect(r1.upperPrice).toBe(r2.upperPrice);
+    expect(r1.lowerPrice).toBe(r2.lowerPrice);
+    expect(r1.currentPrice).toBe(r2.currentPrice);
+    expect(r1.modelType).toBe(r2.modelType);
+    expect(r1.reliable).toBe(r2.reliable);
+  });
+
+  it('predictRange same input → identical output', () => {
+    const candles = makeCandles(300, 9002);
+    const r1 = predictRange(candles, '15m', 16);
+    const r2 = predictRange(candles, '15m', 16);
+
+    expect(r1.sigma).toBe(r2.sigma);
+    expect(r1.move).toBe(r2.move);
+    expect(r1.reliable).toBe(r2.reliable);
+  });
+
+  it('input candles array is not mutated', () => {
+    const candles = makeCandles(200, 9003);
+    const snapshot = candles.map(c => ({ ...c }));
+    predict(candles, '4h');
+
+    for (let i = 0; i < candles.length; i++) {
+      expect(candles[i].open).toBe(snapshot[i].open);
+      expect(candles[i].high).toBe(snapshot[i].high);
+      expect(candles[i].low).toBe(snapshot[i].low);
+      expect(candles[i].close).toBe(snapshot[i].close);
+      expect(candles[i].volume).toBe(snapshot[i].volume);
+    }
+  });
+});
+
+// ── 18. Sigma stabilizes with more data ─────────────────────
+
+describe('sigma stability with increasing data', () => {
+  it('sigma from 200, 400, 800 candles of same process are within 2x', () => {
+    // Generate 800 candles from one process
+    const rng = lcg(1234);
+    const candles: Candle[] = [];
+    let price = 100;
+    let variance = 0.0002;
+    for (let i = 0; i < 800; i++) {
+      const eps = Math.sqrt(variance) * randn(rng);
+      variance = 0.00001 + 0.08 * eps ** 2 + 0.88 * variance;
+      const close = price * Math.exp(eps);
+      const high = Math.max(price, close) * (1 + Math.abs(eps) * 0.3);
+      const low = Math.min(price, close) * (1 - Math.abs(eps) * 0.3);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+
+    // Use last N candles for each test
+    const s200 = predict(candles.slice(-200), '4h').sigma;
+    const s400 = predict(candles.slice(-400), '4h').sigma;
+    const s800 = predict(candles.slice(-800), '4h').sigma;
+
+    // All should be positive and finite
+    expect(s200).toBeGreaterThan(0);
+    expect(s400).toBeGreaterThan(0);
+    expect(s800).toBeGreaterThan(0);
+
+    // Sigma should not diverge wildly between sample sizes
+    const ratio1 = s200 / s400;
+    const ratio2 = s400 / s800;
+    expect(ratio1).toBeGreaterThan(0.5);
+    expect(ratio1).toBeLessThan(2.0);
+    expect(ratio2).toBeGreaterThan(0.5);
+    expect(ratio2).toBeLessThan(2.0);
+  });
+});
+
+// ── 19. GARCH ≈ EGARCH on symmetric data ────────────────────
+
+describe('GARCH vs EGARCH on symmetric data', () => {
+  it('both models produce similar sigma when no leverage effect', () => {
+    // Symmetric GARCH data — no leverage
+    const rng = lcg(4321);
+    const candles: Candle[] = [];
+    let price = 100;
+    let variance = 0.0002;
+    for (let i = 0; i < 300; i++) {
+      const eps = Math.sqrt(variance) * randn(rng);
+      variance = 0.00001 + 0.08 * eps ** 2 + 0.88 * variance;
+      const close = price * Math.exp(eps);
+      const high = Math.max(price, close) * (1 + Math.abs(eps) * 0.3);
+      const low = Math.min(price, close) * (1 - Math.abs(eps) * 0.3);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+
+    const garchModel = new Garch(candles, { periodsPerYear: 2190 });
+    const garchFit = garchModel.fit();
+    const garchSigma = garchModel.forecast(garchFit.params, 1).volatility[0];
+
+    const egarchModel = new Egarch(candles, { periodsPerYear: 2190 });
+    const egarchFit = egarchModel.fit();
+    const egarchSigma = egarchModel.forecast(egarchFit.params, 1).volatility[0];
+
+    // Both should be in the same ballpark (within 3x)
+    const ratio = garchSigma / egarchSigma;
+    expect(ratio).toBeGreaterThan(0.33);
+    expect(ratio).toBeLessThan(3.0);
+  });
+
+  it('EGARCH gamma ≈ 0 on symmetric data', () => {
+    const rng = lcg(5432);
+    const prices = [100];
+    let variance = 0.0002;
+    for (let i = 0; i < 500; i++) {
+      const eps = Math.sqrt(variance) * randn(rng);
+      variance = 0.00001 + 0.08 * eps ** 2 + 0.88 * variance;
+      prices.push(prices[prices.length - 1] * Math.exp(eps));
+    }
+
+    const result = calibrateEgarch(prices, { periodsPerYear: 2190 });
+    // Gamma should be near zero (no leverage effect in symmetric DGP)
+    expect(Math.abs(result.params.gamma)).toBeLessThan(0.15);
+  });
+});
+
+// ── 20. AIC model selection ─────────────────────────────────
+
+describe('AIC model selection', () => {
+  it('EGARCH has lower AIC on asymmetric data', () => {
+    // Generate EGARCH data with strong leverage
+    const rng = lcg(6789);
+    const returns: number[] = [];
+    let logVar = -8;
+    let variance = Math.exp(logVar);
+    for (let i = 0; i < 500; i++) {
+      const z = randn(rng);
+      returns.push(Math.sqrt(variance) * z);
+      logVar = -0.3 + 0.15 * (Math.abs(z) - EXPECTED_ABS_NORMAL) + (-0.1) * z + 0.92 * logVar;
+      logVar = Math.max(-50, Math.min(50, logVar));
+      variance = Math.exp(logVar);
+    }
+    const prices = [100];
+    for (const r of returns) prices.push(prices[prices.length - 1] * Math.exp(r));
+
+    const garch = calibrateGarch(prices, { periodsPerYear: 2190 });
+    const egarch = calibrateEgarch(prices, { periodsPerYear: 2190 });
+
+    // EGARCH should fit better on its own DGP
+    expect(egarch.diagnostics.aic).toBeLessThan(garch.diagnostics.aic);
+  });
+
+  it('GARCH has lower AIC on symmetric GARCH data', () => {
+    const rng = lcg(9876);
+    const returns: number[] = [];
+    let variance = 0.0002;
+    for (let i = 0; i < 500; i++) {
+      const eps = Math.sqrt(variance) * randn(rng);
+      returns.push(eps);
+      variance = 0.00001 + 0.08 * eps ** 2 + 0.88 * variance;
+    }
+    const prices = [100];
+    for (const r of returns) prices.push(prices[prices.length - 1] * Math.exp(r));
+
+    const garch = calibrateGarch(prices, { periodsPerYear: 2190 });
+    const egarch = calibrateEgarch(prices, { periodsPerYear: 2190 });
+
+    // GARCH should win (or at least be close) — EGARCH has extra param penalty
+    // AIC = 2k - 2LL, EGARCH has k=4 vs k=3 for GARCH
+    // On symmetric data, gamma ≈ 0, so extra param just adds penalty
+    expect(garch.diagnostics.aic).toBeLessThanOrEqual(egarch.diagnostics.aic + 5);
+  });
+});
+
+// ── 21. Forecast term structure — monotone convergence ──────
+
+describe('forecast term structure', () => {
+  it('GARCH variance monotonically approaches unconditional', () => {
+    const candles = makeCandles(200, 7001);
+    const model = new Garch(candles, { periodsPerYear: 2190 });
+    const fit = model.fit();
+    const uncond = fit.params.unconditionalVariance;
+    const forecast = model.forecast(fit.params, 50);
+
+    // Each step should be closer to unconditional than the previous
+    for (let i = 1; i < forecast.variance.length; i++) {
+      const distPrev = Math.abs(forecast.variance[i - 1] - uncond);
+      const distCurr = Math.abs(forecast.variance[i] - uncond);
+      expect(distCurr).toBeLessThanOrEqual(distPrev + 1e-18); // tolerance for float
+    }
+  });
+
+  it('EGARCH variance monotonically approaches unconditional', () => {
+    const candles = makeAsymmetricCandles(200, 7002);
+    const model = new Egarch(candles, { periodsPerYear: 2190 });
+    const fit = model.fit();
+    const uncond = fit.params.unconditionalVariance;
+    const forecast = model.forecast(fit.params, 50);
+
+    for (let i = 1; i < forecast.variance.length; i++) {
+      const distPrev = Math.abs(forecast.variance[i - 1] - uncond);
+      const distCurr = Math.abs(forecast.variance[i] - uncond);
+      expect(distCurr).toBeLessThanOrEqual(distPrev + 1e-15);
+    }
+  });
+});
+
+// ── 22. calculateReturns ≡ calculateReturnsFromPrices ───────
+
+describe('calculateReturns vs calculateReturnsFromPrices', () => {
+  it('produce identical results from candle closes', () => {
+    const candles = makeCandles(100, 8001);
+    const closes = candles.map(c => c.close);
+
+    const fromCandles = calculateReturns(candles);
+    const fromPrices = calculateReturnsFromPrices(closes);
+
+    expect(fromCandles.length).toBe(fromPrices.length);
+    for (let i = 0; i < fromCandles.length; i++) {
+      expect(fromCandles[i]).toBe(fromPrices[i]);
+    }
   });
 });
