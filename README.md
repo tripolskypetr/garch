@@ -253,8 +253,7 @@ Parameters are estimated via **Nelder-Mead** simplex method (derivative-free). D
 | Miscellaneous | `misc.test.ts` | 12 | Integration scenarios, different intervals |
 
 ```bash
-npm test              # run all tests
-npm run test:coverage # run with coverage report
+npm test        # run all tests
 ```
 
 ## License
