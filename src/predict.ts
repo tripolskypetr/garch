@@ -150,27 +150,22 @@ export function predictRange(
 
 // ── Backtest ──────────────────────────────────────────────────
 
-export interface BacktestResult {
-  total: number;
-  hits: number;
-  hitRate: number;
-  predictions: { predicted: PredictionResult; actual: number }[];
-}
+const BACKTEST_REQUIRED_PERCENT = 68;
 
 /**
  * Walk-forward backtest of predict.
  *
- * Slides a window across candles, calls predict at each step,
- * checks if the next candle's close lands within ±1σ corridor.
- * Hit rate should be ~68% if the model is well-calibrated.
+ * Returns true if the model's hit rate meets the required threshold.
+ * Default threshold is 68% (±1σ should contain ~68% of moves).
  */
 export function backtest(
   candles: Candle[],
   interval: CandleInterval,
   window: number,
-): BacktestResult {
-  const predictions: BacktestResult['predictions'] = [];
+  requiredPercent = BACKTEST_REQUIRED_PERCENT,
+): boolean {
   let hits = 0;
+  let total = 0;
 
   for (let i = window; i < candles.length - 1; i++) {
     const slice = candles.slice(i - window, i + 1);
@@ -180,18 +175,11 @@ export function backtest(
     if (actual >= predicted.lowerPrice && actual <= predicted.upperPrice) {
       hits++;
     }
-
-    predictions.push({ predicted, actual });
+    total++;
   }
 
-  const total = predictions.length;
-
-  return {
-    total,
-    hits,
-    hitRate: total > 0 ? hits / total : 0,
-    predictions,
-  };
+  if (total === 0) return false;
+  return (hits / total) * 100 >= requiredPercent;
 }
 
 // ── Multi-timeframe ───────────────────────────────────────────

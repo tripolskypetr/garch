@@ -23,7 +23,6 @@ export {
   predictMultiTimeframe,
   type CandleInterval,
   type PredictionResult,
-  type BacktestResult,
   type MultiTimeframePrediction,
 } from './predict.js';
 

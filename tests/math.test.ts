@@ -699,42 +699,24 @@ describe('backtest', () => {
     return candles;
   }
 
-  it('returns correct total count', () => {
+  it('returns boolean', () => {
     const candles = makeCandles(120);
     const result = backtest(candles, '4h', 60);
-    // window=60, so predictions from index 60 to 118 (candles.length - 2)
-    expect(result.total).toBe(candles.length - 1 - 60);
-    expect(result.predictions).toHaveLength(result.total);
+    expect(typeof result).toBe('boolean');
   });
 
-  it('hitRate is between 0 and 1', () => {
-    const candles = makeCandles(120);
-    const result = backtest(candles, '4h', 60);
-    expect(result.hitRate).toBeGreaterThanOrEqual(0);
-    expect(result.hitRate).toBeLessThanOrEqual(1);
-  });
-
-  it('hits <= total', () => {
-    const candles = makeCandles(120);
-    const result = backtest(candles, '4h', 60);
-    expect(result.hits).toBeLessThanOrEqual(result.total);
-    expect(result.hits).toBeGreaterThanOrEqual(0);
-  });
-
-  it('predictions contain actual close prices', () => {
-    const candles = makeCandles(80);
-    const result = backtest(candles, '4h', 55);
-    for (let i = 0; i < result.predictions.length; i++) {
-      const idx = 55 + 1 + i; // actual candle index
-      expect(result.predictions[i].actual).toBe(candles[idx].close);
-    }
-  });
-
-  it('returns zero total when window equals candles length minus 1', () => {
+  it('returns false when not enough data', () => {
     const candles = makeCandles(61);
     const result = backtest(candles, '4h', 60);
-    expect(result.total).toBe(0);
-    expect(result.hitRate).toBe(0);
+    expect(result).toBe(false);
+  });
+
+  it('accepts custom requiredPercent', () => {
+    const candles = makeCandles(120);
+    // With 0% threshold, should always pass
+    expect(backtest(candles, '4h', 60, 0)).toBe(true);
+    // With 100% threshold, very unlikely to pass
+    expect(backtest(candles, '4h', 60, 100)).toBe(false);
   });
 });
 
