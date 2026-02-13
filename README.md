@@ -182,7 +182,8 @@ const result = predict(candles, '4h');
 //   move: 1170,            // ±$1170 price range
 //   upperPrice: 98670,     // ceiling for next candle
 //   lowerPrice: 96330,     // floor for next candle
-//   modelType: 'egarch'
+//   modelType: 'egarch',
+//   reliable: true          // false if model didn't converge or is inadequate
 // }
 
 // EMA says "long", sigma says price can move ~1.2%
@@ -217,6 +218,31 @@ const result = predict(candles, '4h', vwap);
 | 8h | 1,095 | 150 | 50 | ~50 days |
 
 Lower timeframes contain more microstructure noise — use larger datasets to compensate. Too few candles and the model won't capture volatility clustering; too many and you fit stale regimes that no longer apply.
+
+### predictRange
+
+`predictRange` forecasts the cumulative expected move over N candles. The cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected range, not per-candle. Use for swing trades where you hold a position across multiple periods.
+
+```typescript
+import { predictRange } from 'garch';
+
+const candles = await fetchCandles('BTCUSDT', '4h', 200);
+
+// Expected range over next 5 candles (20 hours)
+const range = predictRange(candles, '4h', 5);
+// {
+//   currentPrice: 97500,
+//   sigma: 0.027,           // cumulative ~2.7% over 5 candles
+//   move: 2632,             // ±$2632 total range
+//   upperPrice: 100132,
+//   lowerPrice: 94868,
+//   modelType: 'egarch',
+//   reliable: true
+// }
+
+// Also accepts VWAP as 4th argument
+const range = predictRange(candles, '4h', 5, vwap);
+```
 
 ## Model Details
 
