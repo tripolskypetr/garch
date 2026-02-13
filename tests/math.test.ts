@@ -8,6 +8,7 @@ import {
   calculateReturnsFromPrices,
   sampleVariance,
   sampleVarianceWithMean,
+  garmanKlassVariance,
   EXPECTED_ABS_NORMAL,
 } from '../src/index.js';
 import { calculateAIC, calculateBIC } from '../src/utils.js';
@@ -330,6 +331,49 @@ describe('sampleVarianceWithMean', () => {
     const returns = [0.05, 0.06, 0.04, 0.07, 0.03];
 
     expect(sampleVariance(returns)).toBeGreaterThan(sampleVarianceWithMean(returns));
+  });
+});
+
+// ── 9b. garmanKlassVariance ────────────────────────────────
+
+describe('garmanKlassVariance', () => {
+  it('returns positive number for valid candles', () => {
+    const candles = [
+      { open: 100, high: 105, low: 98, close: 103, volume: 1000 },
+      { open: 103, high: 107, low: 101, close: 102, volume: 1200 },
+      { open: 102, high: 108, low: 100, close: 106, volume: 900 },
+      { open: 106, high: 110, low: 104, close: 105, volume: 1100 },
+    ];
+    const gk = garmanKlassVariance(candles);
+    expect(gk).toBeGreaterThan(0);
+    expect(Number.isFinite(gk)).toBe(true);
+  });
+
+  it('matches hand-calculated value', () => {
+    const candles = [
+      { open: 100, high: 110, low: 90, close: 105, volume: 1000 },
+    ];
+    const hl = Math.log(110 / 90);
+    const co = Math.log(105 / 100);
+    const expected = 0.5 * hl * hl - (2 * Math.LN2 - 1) * co * co;
+    expect(garmanKlassVariance(candles)).toBeCloseTo(expected, 14);
+  });
+
+  it('same order of magnitude as sampleVariance on same data', () => {
+    const candles = [
+      { open: 100, high: 102, low: 99, close: 101, volume: 1000 },
+      { open: 101, high: 104, low: 100, close: 103, volume: 1200 },
+      { open: 103, high: 105, low: 101, close: 102, volume: 900 },
+      { open: 102, high: 106, low: 100, close: 104, volume: 1100 },
+      { open: 104, high: 107, low: 102, close: 105, volume: 950 },
+    ];
+    const returns = calculateReturns(candles);
+    const sv = sampleVariance(returns);
+    const gk = garmanKlassVariance(candles);
+
+    // Both should be small positive numbers in the same ballpark
+    expect(gk / sv).toBeGreaterThan(0.1);
+    expect(gk / sv).toBeLessThan(10);
   });
 });
 

@@ -9,6 +9,7 @@ export {
   sampleVariance,
   sampleVarianceWithMean,
   checkLeverageEffect,
+  garmanKlassVariance,
   EXPECTED_ABS_NORMAL,
 } from './utils.js';
 

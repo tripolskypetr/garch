@@ -4,6 +4,7 @@ import {
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
+  garmanKlassVariance,
   calculateAIC,
   calculateBIC,
 } from './utils.js';
@@ -40,11 +41,12 @@ export class Garch {
     // Determine if input is candles or prices
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
+      this.initialVariance = sampleVariance(this.returns);
     } else {
-      this.returns = calculateReturns(data as Candle[]);
+      const candles = data as Candle[];
+      this.returns = calculateReturns(candles);
+      this.initialVariance = garmanKlassVariance(candles);
     }
-
-    this.initialVariance = sampleVariance(this.returns);
   }
 
   /**

@@ -72,6 +72,28 @@ export function checkLeverageEffect(returns: number[]): LeverageStats {
 }
 
 /**
+ * Garman-Klass (1980) variance estimator using OHLC data.
+ *
+ * σ²_GK = (1/n) Σ [ 0.5·(ln(H/L))² − (2ln2−1)·(ln(C/O))² ]
+ *
+ * ~5x more efficient than close-to-close variance.
+ */
+export function garmanKlassVariance(candles: Candle[]): number {
+  const n = candles.length;
+  const coeff = 2 * Math.LN2 - 1;
+  let sum = 0;
+
+  for (let i = 0; i < n; i++) {
+    const { open, high, low, close } = candles[i];
+    const hl = Math.log(high / low);
+    const co = Math.log(close / open);
+    sum += 0.5 * hl * hl - coeff * co * co;
+  }
+
+  return sum / n;
+}
+
+/**
  * Expected value of |Z| where Z ~ N(0,1)
  * E[|Z|] = sqrt(2/π)
  */
