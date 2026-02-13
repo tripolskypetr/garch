@@ -165,6 +165,59 @@ calibrateGarch(prices, { periodsPerYear: 24192 });
 
 **Recommended timeframes:** 1d and 4h are the most reliable for GARCH models. Lower timeframes (15m, 1m) contain more microstructure noise which can degrade calibration quality — use larger datasets to compensate.
 
+## Predict
+
+The `predict` function forecasts the expected price range for the next candle (t+1). It auto-selects GARCH or EGARCH, fits the model, and returns a ±1σ price corridor. You decide SL/TP yourself based on the forecast.
+
+```typescript
+import { predict } from 'garch';
+import type { Candle } from 'garch';
+
+const candles: Candle[] = await fetchCandles('BTCUSDT', '4h', 200);
+
+const result = predict(candles, '4h');
+// {
+//   currentPrice: 97500,
+//   sigma: 0.012,          // 1.2% expected move
+//   move: 1170,            // ±$1170 price range
+//   upperPrice: 98670,     // ceiling for next candle
+//   lowerPrice: 96330,     // floor for next candle
+//   modelType: 'egarch'
+// }
+
+// EMA says "long", sigma says price can move ~1.2%
+// You set TP = +1%, SL = -0.5% manually
+```
+
+The third argument `currentPrice` defaults to the last candle close. You can pass a VWAP or any other reference price to center the corridor around it:
+
+```typescript
+// VWAP from last 5 candles as the reference price
+const recent = candles.slice(-5);
+const vwap = recent.reduce((sum, c) => sum + c.close * c.volume, 0)
+            / recent.reduce((sum, c) => sum + c.volume, 0);
+
+const result = predict(candles, '4h', vwap);
+// corridor is now centered around VWAP, not last close
+```
+
+### Supported intervals
+
+| Interval | Periods/year | Recommended candles | Min | Coverage |
+|----------|-------------|---------------------|-----|----------|
+| 1m | 525,600 | 500–1000 | 50 | ~8–16 hours |
+| 3m | 175,200 | 500 | 50 | ~25 hours |
+| 5m | 105,120 | 500 | 50 | ~1.7 days |
+| 15m | 35,040 | 300 | 50 | ~3 days |
+| 30m | 17,520 | 200 | 50 | ~4 days |
+| 1h | 8,760 | 200 | 50 | ~8 days |
+| 2h | 4,380 | 200 | 50 | ~17 days |
+| 4h | 2,190 | 200 | 50 | ~33 days |
+| 6h | 1,460 | 150 | 50 | ~37 days |
+| 8h | 1,095 | 150 | 50 | ~50 days |
+
+Lower timeframes contain more microstructure noise — use larger datasets to compensate. Too few candles and the model won't capture volatility clustering; too many and you fit stale regimes that no longer apply.
+
 ## Model Details
 
 ### GARCH(1,1)

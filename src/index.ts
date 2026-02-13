@@ -12,6 +12,9 @@ export {
   EXPECTED_ABS_NORMAL,
 } from './utils.js';
 
+// Prediction
+export { predict, type CandleInterval, type PredictionResult } from './predict.js';
+
 // Optimizer (for advanced usage)
 export { nelderMead } from './optimizer.js';
 
