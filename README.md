@@ -13,161 +13,11 @@
 npm install garch
 ```
 
-## Usage
-
-### GARCH(1,1)
-
-```typescript
-import { calibrateGarch, Garch } from 'garch';
-
-// From price array
-const prices = [100, 101, 99, 102, 98, ...];
-const result = calibrateGarch(prices, { periodsPerYear: 252 });
-
-console.log(result.params);
-// {
-//   omega: 0.000012,
-//   alpha: 0.08,
-//   beta: 0.89,
-//   persistence: 0.97,
-//   unconditionalVariance: 0.0004,
-//   annualizedVol: 31.7
-// }
-
-// Or use the class for more control
-const model = new Garch(prices, { periodsPerYear: 252 });
-const fit = model.fit();
-
-// Get variance series
-const variance = model.getVarianceSeries(fit.params);
-
-// Forecast 10 periods ahead
-const forecast = model.forecast(fit.params, 10);
-console.log(forecast.annualized); // [32.1, 31.9, 31.8, ...]
-```
-
-### EGARCH(1,1)
-
-EGARCH captures asymmetric volatility (leverage effect):
-
-```typescript
-import { calibrateEgarch, Egarch, checkLeverageEffect } from 'garch';
-
-// Check if EGARCH is warranted
-const returns = calculateReturnsFromPrices(prices);
-const leverage = checkLeverageEffect(returns);
-console.log(leverage);
-// { negativeVol: 0.021, positiveVol: 0.015, ratio: 1.4, recommendation: 'egarch' }
-
-// Fit EGARCH
-const result = calibrateEgarch(prices, { periodsPerYear: 365 }); // crypto = 365
-
-console.log(result.params);
-// {
-//   omega: -0.12,
-//   alpha: 0.15,
-//   gamma: -0.08,  // negative = leverage effect
-//   beta: 0.95,
-//   persistence: 0.95,
-//   annualizedVol: 45.2,
-//   leverageEffect: -0.08
-// }
-```
-
-### From OHLCV Candles
-
-```typescript
-import { Candle, calibrateGarch } from 'garch';
-
-const candles: Candle[] = [
-  { open: 100, high: 102, low: 99, close: 101, volume: 1000 },
-  { open: 101, high: 103, low: 100, close: 99, volume: 1200 },
-  // ...
-];
-
-const result = calibrateGarch(candles);
-```
-
-### Model Selection
-
-```typescript
-import { calibrateGarch, calibrateEgarch } from 'garch';
-
-const garch = calibrateGarch(prices);
-const egarch = calibrateEgarch(prices);
-
-// Compare using AIC (lower is better)
-if (egarch.diagnostics.aic < garch.diagnostics.aic) {
-  console.log('EGARCH fits better');
-}
-```
-
 ## API
 
-### `calibrateGarch(data, options?)`
+### `predict(candles, interval, currentPrice?)`
 
-Calibrate GARCH(1,1) model.
-
-**Parameters:**
-- `data`: `Candle[]` or `number[]` (prices)
-- `options.periodsPerYear`: Annualization factor (default: 252)
-- `options.maxIter`: Maximum optimizer iterations (default: 1000)
-- `options.tol`: Convergence tolerance (default: 1e-8)
-
-**Returns:** `CalibrationResult<GarchParams>`
-
-### `calibrateEgarch(data, options?)`
-
-Calibrate EGARCH(1,1) model.
-
-**Parameters:** Same as `calibrateGarch`
-
-**Returns:** `CalibrationResult<EgarchParams>`
-
-### `checkLeverageEffect(returns)`
-
-Check for asymmetric volatility.
-
-**Returns:** `{ negativeVol, positiveVol, ratio, recommendation }`
-
-### Classes
-
-`Garch` and `Egarch` classes provide:
-- `.fit(options?)` - Calibrate parameters
-- `.getVarianceSeries(params)` - Compute conditional variance
-- `.forecast(params, steps)` - Multi-step variance forecast
-- `.getReturns()` - Get computed returns
-
-## Timeframes
-
-The library works with any candle timeframe. The only thing that changes is the `periodsPerYear` option, which controls annualization of volatility.
-
-| Timeframe | `periodsPerYear` | Notes |
-|-----------|-----------------|-------|
-| **1d** | `252` (default) | Trading days per year |
-| **4h** | `1512` | 252 × 6 |
-| **1h** | `6048` (crypto) / `1638` (stocks) | Crypto trades 24/7, stocks ~6.5h/day |
-| **15m** | `24192` (crypto) / `6552` (stocks) | 96 or 26 bars per day × 252 |
-| **1m** | `362880` (crypto) / `393120` (stocks) | 1440 or 390 bars per day × 252 |
-
-```typescript
-// Daily candles (default)
-calibrateGarch(prices);
-
-// 4-hour candles
-calibrateGarch(prices, { periodsPerYear: 1512 });
-
-// 15-minute candles (crypto, 24/7 market)
-calibrateGarch(prices, { periodsPerYear: 24192 });
-```
-
-**Minimum data:** 50 candles are required for stable parameter estimation.
-
-**Recommended timeframes:** 1d and 4h are the most reliable for GARCH models. Lower timeframes (15m, 1m) contain more microstructure noise which can degrade calibration quality — use larger datasets to compensate.
-
-## Predict
-
-The `predict` function forecasts the expected price range for the next candle (t+1). It auto-selects GARCH or EGARCH, fits the model, and returns a ±1σ price corridor. You decide SL/TP yourself based on the forecast.
+Forecast expected price range for the next candle (t+1). Auto-selects GARCH or EGARCH based on leverage effect. Returns a +-1 sigma price corridor.
 
 ```typescript
 import { predict } from 'garch';
@@ -179,119 +29,232 @@ const result = predict(candles, '4h');
 // {
 //   currentPrice: 97500,
 //   sigma: 0.012,          // 1.2% expected move
-//   move: 1170,            // ±$1170 price range
+//   move: 1170,            // +/-$1170 price range
 //   upperPrice: 98670,     // ceiling for next candle
 //   lowerPrice: 96330,     // floor for next candle
 //   modelType: 'egarch',
-//   reliable: true          // false if model didn't converge or is inadequate
+//   reliable: true
 // }
 
-// EMA says "long", sigma says price can move ~1.2%
-// You set TP = +1%, SL = -0.5% manually
+// Pass VWAP or any reference price as 3rd argument
+const result = predict(candles, '4h', vwap);
 ```
 
-The third argument `currentPrice` defaults to the last candle close. You can pass a VWAP or any other reference price to center the corridor around it:
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `candles` | `Candle[]` | required | OHLCV candle data |
+| `interval` | `CandleInterval` | required | Candle timeframe |
+| `currentPrice` | `number` | last close | Reference price to center the corridor |
+
+**Returns:** `PredictionResult`
 
 ```typescript
-// VWAP from last 5 candles as the reference price
-const recent = candles.slice(-5);
-const vwap = recent.reduce((sum, c) => sum + c.close * c.volume, 0)
-            / recent.reduce((sum, c) => sum + c.volume, 0);
-
-const result = predict(candles, '4h', vwap);
-// corridor is now centered around VWAP, not last close
+interface PredictionResult {
+  currentPrice: number;           // Reference price
+  sigma: number;                  // One-period volatility (decimal, e.g. 0.012 = 1.2%)
+  move: number;                   // +/- price move = currentPrice * sigma
+  upperPrice: number;             // currentPrice + move
+  lowerPrice: number;             // currentPrice - move
+  modelType: 'garch' | 'egarch'; // Auto-selected model
+  reliable: boolean;              // Quality flag (convergence + persistence + Ljung-Box)
+}
 ```
 
-### Supported intervals
+---
 
-| Interval | Periods/year | Recommended candles | Min | Coverage |
-|----------|-------------|---------------------|-----|----------|
-| 1m | 525,600 | 500–1000 | 50 | ~8–16 hours |
-| 3m | 175,200 | 500 | 50 | ~25 hours |
-| 5m | 105,120 | 500 | 50 | ~1.7 days |
-| 15m | 35,040 | 300 | 50 | ~3 days |
-| 30m | 17,520 | 200 | 50 | ~4 days |
-| 1h | 8,760 | 200 | 50 | ~8 days |
-| 2h | 4,380 | 200 | 50 | ~17 days |
-| 4h | 2,190 | 200 | 50 | ~33 days |
-| 6h | 1,460 | 150 | 50 | ~37 days |
-| 8h | 1,095 | 150 | 50 | ~50 days |
+### `predictRange(candles, interval, steps, currentPrice?)`
 
-Lower timeframes contain more microstructure noise — use larger datasets to compensate. Too few candles and the model won't capture volatility clustering; too many and you fit stale regimes that no longer apply.
-
-### predictRange
-
-`predictRange` forecasts the cumulative expected move over N candles. The cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected range, not per-candle. Use for swing trades where you hold a position across multiple periods.
+Forecast cumulative expected price range over multiple candles. Cumulative sigma = sqrt(sigma_1^2 + sigma_2^2 + ... + sigma_n^2). Use for swing trades where you hold across multiple periods.
 
 ```typescript
 import { predictRange } from 'garch';
 
-const candles = await fetchCandles('BTCUSDT', '4h', 200);
-
-// Expected range over next 5 candles (20 hours)
 const range = predictRange(candles, '4h', 5);
 // {
 //   currentPrice: 97500,
 //   sigma: 0.027,           // cumulative ~2.7% over 5 candles
-//   move: 2632,             // ±$2632 total range
+//   move: 2632,             // +/-$2632 total range
 //   upperPrice: 100132,
 //   lowerPrice: 94868,
 //   modelType: 'egarch',
 //   reliable: true
 // }
-
-// Also accepts VWAP as 4th argument
-const range = predictRange(candles, '4h', 5, vwap);
 ```
 
-### backtest
+**Parameters:**
 
-Walk-forward validation of `predict`. Window is computed automatically (75% of candles for fitting, 25% for testing). Returns `true` if hit rate meets the threshold, `false` otherwise. Throws if fewer than 61 candles.
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `candles` | `Candle[]` | required | OHLCV candle data |
+| `interval` | `CandleInterval` | required | Candle timeframe |
+| `steps` | `number` | required | Number of candles to forecast over |
+| `currentPrice` | `number` | last close | Reference price |
+
+**Returns:** `PredictionResult` (same structure as `predict`)
+
+---
+
+### `backtest(candles, interval, requiredPercent?)`
+
+Walk-forward validation of `predict`. Uses 75% of candles for fitting, 25% for testing. Checks if the model's +-1 sigma corridor captures actual price moves at the required hit rate.
 
 ```typescript
 import { backtest } from 'garch';
 
-const candles = await fetchCandles('BTCUSDT', '4h', 500);
-
-backtest(candles, '4h');     // true — hit rate ≥ 68% (default threshold)
-backtest(candles, '4h', 50); // true — hit rate ≥ 50% (custom threshold)
+backtest(candles, '4h');     // true  -- hit rate >= 68% (default)
+backtest(candles, '4h', 50); // true  -- hit rate >= 50% (custom)
 ```
 
-## Model Details
+**Parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `candles` | `Candle[]` | required | OHLCV candle data |
+| `interval` | `CandleInterval` | required | Candle timeframe |
+| `requiredPercent` | `number` | `68` | Minimum hit rate (+-1 sigma ~ 68% theoretically) |
+
+**Returns:** `boolean`
+
+---
+
+## Supported Intervals
+
+| Interval | Min Candles | Periods/Year | Coverage |
+|----------|-------------|--------------|----------|
+| `1m` | 500 | 525,600 | ~8-16 hours |
+| `3m` | 500 | 175,200 | ~25 hours |
+| `5m` | 500 | 105,120 | ~1.7 days |
+| `15m` | 300 | 35,040 | ~3 days |
+| `30m` | 200 | 17,520 | ~4 days |
+| `1h` | 200 | 8,760 | ~8 days |
+| `2h` | 200 | 4,380 | ~17 days |
+| `4h` | 200 | 2,190 | ~33 days |
+| `6h` | 150 | 1,460 | ~37 days |
+| `8h` | 150 | 1,095 | ~50 days |
+
+## Timeframes
+
+The `periodsPerYear` value controls annualization of volatility. When using `predict`/`predictRange`/`backtest`, this is handled automatically via the `interval` parameter. When using `Garch`/`Egarch` classes directly, pass `periodsPerYear` manually.
+
+| Timeframe | `periodsPerYear` | Notes |
+|-----------|-----------------|-------|
+| **1m** | `525,600` | 1440/day x 365 |
+| **3m** | `175,200` | 480/day x 365 |
+| **5m** | `105,120` | 288/day x 365 |
+| **15m** | `35,040` | 96/day x 365 |
+| **30m** | `17,520` | 48/day x 365 |
+| **1h** | `8,760` | 24/day x 365 |
+| **2h** | `4,380` | 12/day x 365 |
+| **4h** | `2,190` | 6/day x 365 |
+| **6h** | `1,460` | 4/day x 365 |
+| **8h** | `1,095` | 3/day x 365 |
+
+Lower timeframes contain more microstructure noise — use larger datasets to compensate.
+
+## Math
 
 ### GARCH(1,1)
 
+Conditional variance model (Bollerslev, 1986):
+
 ```
-σ²ₜ = ω + α·ε²ₜ₋₁ + β·σ²ₜ₋₁
+sigma_t^2 = omega + alpha * epsilon_{t-1}^2 + beta * sigma_{t-1}^2
 ```
 
-- `ω` (omega) > 0: constant term
-- `α` (alpha) ≥ 0: reaction to shocks
-- `β` (beta) ≥ 0: persistence
-- Stationarity: α + β < 1
+- **omega** > 0 — long-run variance anchor
+- **alpha** >= 0 — shock reaction (how much yesterday's surprise matters)
+- **beta** >= 0 — persistence (memory of past variance)
+- Stationarity constraint: **alpha + beta < 1**
+- Unconditional variance: **E[sigma^2] = omega / (1 - alpha - beta)**
+
+Parameter estimation via **Gaussian MLE** (maximum likelihood):
+
+```
+LL = -0.5 * sum[ ln(sigma_t^2) + epsilon_t^2 / sigma_t^2 ]
+```
+
+Multi-step forecast converges to unconditional variance:
+
+```
+sigma_{t+h}^2 = omega + (alpha + beta) * sigma_{t+h-1}^2
+```
 
 ### EGARCH(1,1)
 
+Exponential GARCH (Nelson, 1991). Models log-variance, capturing asymmetric volatility:
+
 ```
-ln(σ²ₜ) = ω + α·(|zₜ₋₁| - E[|z|]) + γ·zₜ₋₁ + β·ln(σ²ₜ₋₁)
+ln(sigma_t^2) = omega + alpha * (|z_{t-1}| - sqrt(2/pi)) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
 ```
 
-- `γ` (gamma) < 0: leverage effect (negative returns increase vol more)
-- No positivity constraints needed (models log-variance)
-- `|β|` < 1 for stationarity
+Where **z_t = epsilon_t / sigma_t** is the standardized residual, **sqrt(2/pi) ~ 0.7979**.
 
-### Model Selection
+- **gamma** < 0 — leverage effect (negative returns increase vol more than positive)
+- No positivity constraints needed (log-variance is always real)
+- Stationarity: **|beta| < 1**
+- Unconditional variance: **E[sigma^2] ~ exp(omega / (1 - beta))**
 
-```typescript
-import { calibrateGarch, calibrateEgarch } from 'garch';
+### Model Auto-Selection
 
-const garch = calibrateGarch(prices);
-const egarch = calibrateEgarch(prices);
+`predict` and `predictRange` automatically choose between GARCH and EGARCH:
 
-// Compare using AIC (lower is better)
-if (egarch.diagnostics.aic < garch.diagnostics.aic) {
-  console.log('EGARCH fits better — leverage effect is significant');
-}
+1. Compute volatility of negative returns vs. positive returns
+2. If ratio > 1.2 — use EGARCH (significant leverage effect detected)
+3. Otherwise — use simpler GARCH
+
+### Variance Estimators
+
+**Yang-Zhang** (used as initial variance for model fitting):
+
+```
+sigma^2_YZ = sigma^2_overnight + k * sigma^2_close + (1-k) * sigma^2_RS
+```
+
+Combines overnight gaps, open-to-close moves, and Rogers-Satchell intraday range. More robust than close-to-close for OHLC data.
+
+**Garman-Klass** (fallback):
+
+```
+sigma^2_GK = (1/n) * sum[ 0.5 * ln(H/L)^2 - (2*ln2 - 1) * ln(C/O)^2 ]
+```
+
+~5x more efficient than close-to-close variance.
+
+### Reliability Check
+
+The `reliable` flag in `PredictionResult` is `true` when all three conditions hold:
+
+1. Optimizer converged
+2. Persistence < 0.999 (not near unit root)
+3. Ljung-Box test on squared standardized residuals: p-value >= 0.05 (no residual autocorrelation)
+
+### Optimization
+
+Parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
+
+## Tests
+
+**400 tests** across **17 test files**. All passing.
+
+| Category | Files | Tests | What's covered |
+|----------|-------|-------|----------------|
+| Mathematical formulas | `math.test.ts` | 45 | GARCH/EGARCH variance recursion, log-likelihood, forecast formulas, AIC/BIC, Yang-Zhang, Garman-Klass, Ljung-Box, chi-squared |
+| Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
+| GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
+| EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
+| Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 16 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking |
+| Statistical properties | `properties.test.ts` | 13 | Parameter recovery from synthetic data, local LL maximum, unconditional variance |
+| Regression | `regression.test.ts` | 9 | Parameter recovery, deterministic outputs |
+| Stability | `stability.test.ts` | 10 | Long-term forecast behavior, variance convergence |
+| Robustness | `robustness.test.ts` | 53 | Extreme moves, stress scenarios |
+| Edge cases | `edge-cases.test.ts`, `coverage-gaps*.test.ts` | 148 | Insufficient data, near-unit-root, zero returns, constant prices, negative prices, overflow/underflow, trending data, 10K+ data points |
+| Miscellaneous | `misc.test.ts` | 12 | Integration scenarios, different intervals |
+
+```bash
+npm test              # run all tests
+npm run test:coverage # run with coverage report
 ```
 
 ## License
