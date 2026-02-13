@@ -20,10 +20,8 @@ export {
   predict,
   predictRange,
   backtest,
-  predictMultiTimeframe,
   type CandleInterval,
   type PredictionResult,
-  type MultiTimeframePrediction,
 } from './predict.js';
 
 // Optimizer (for advanced usage)

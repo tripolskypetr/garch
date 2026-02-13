@@ -257,27 +257,6 @@ backtest(candles, '4h');     // true — hit rate ≥ 68% (default threshold)
 backtest(candles, '4h', 50); // true — hit rate ≥ 50% (custom threshold)
 ```
 
-### predictMultiTimeframe
-
-Compare volatility forecasts across two timeframes. Normalizes both σ to per-hour and detects divergence (one timeframe sees 2x+ more vol than the other). Separate entry point — does not modify `predict` or `predictRange`.
-
-```typescript
-import { predictMultiTimeframe } from 'garch';
-
-const candles4h = await fetchCandles('BTCUSDT', '4h', 200);
-const candles15m = await fetchCandles('BTCUSDT', '15m', 300);
-
-const result = predictMultiTimeframe(candles4h, '4h', candles15m, '15m');
-// {
-//   primary: PredictionResult,    // 4h forecast
-//   secondary: PredictionResult,  // 15m forecast
-//   divergence: true              // timeframes disagree on vol
-// }
-
-// divergence = true → one tf sees calm, the other sees storm
-// useful as a filter: skip entry when timeframes diverge
-```
-
 ## Model Details
 
 ### GARCH(1,1)
