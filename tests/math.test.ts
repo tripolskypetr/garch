@@ -701,22 +701,21 @@ describe('backtest', () => {
 
   it('returns boolean', () => {
     const candles = makeCandles(120);
-    const result = backtest(candles, '4h', 60);
+    const result = backtest(candles, '4h');
     expect(typeof result).toBe('boolean');
   });
 
-  it('returns false when not enough data', () => {
-    const candles = makeCandles(61);
-    const result = backtest(candles, '4h', 60);
-    expect(result).toBe(false);
+  it('throws when not enough candles', () => {
+    const candles = makeCandles(50);
+    expect(() => backtest(candles, '4h')).toThrow('Need at least 61 candles');
   });
 
   it('accepts custom requiredPercent', () => {
     const candles = makeCandles(120);
     // With 0% threshold, should always pass
-    expect(backtest(candles, '4h', 60, 0)).toBe(true);
+    expect(backtest(candles, '4h', 0)).toBe(true);
     // With 100% threshold, very unlikely to pass
-    expect(backtest(candles, '4h', 60, 100)).toBe(false);
+    expect(backtest(candles, '4h', 100)).toBe(false);
   });
 });
 

@@ -246,20 +246,15 @@ const range = predictRange(candles, '4h', 5, vwap);
 
 ### backtest
 
-Walk-forward validation of `predict`. Slides a window across historical candles, calls predict at each step, checks if the next candle's close landed within ±1σ corridor. Hit rate should be ~68% if the model is well-calibrated.
+Walk-forward validation of `predict`. Window is computed automatically (75% of candles for fitting, 25% for testing). Returns `true` if hit rate meets the threshold, `false` otherwise. Throws if fewer than 61 candles.
 
 ```typescript
 import { backtest } from 'garch';
 
 const candles = await fetchCandles('BTCUSDT', '4h', 500);
 
-const result = backtest(candles, '4h', 200); // window = 200 candles per fit
-// {
-//   total: 299,       // number of predictions
-//   hits: 210,        // times actual was within corridor
-//   hitRate: 0.702,   // ~70% — model is well-calibrated
-//   predictions: [{ predicted: PredictionResult, actual: number }, ...]
-// }
+backtest(candles, '4h');     // true — hit rate ≥ 68% (default threshold)
+backtest(candles, '4h', 50); // true — hit rate ≥ 50% (custom threshold)
 ```
 
 ### predictMultiTimeframe

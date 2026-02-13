@@ -151,19 +151,29 @@ export function predictRange(
 // ── Backtest ──────────────────────────────────────────────────
 
 const BACKTEST_REQUIRED_PERCENT = 68;
+const BACKTEST_MIN_WINDOW = 50;
+const BACKTEST_MIN_POINTS = 10;
+const BACKTEST_WINDOW_RATIO = 0.75;
 
 /**
  * Walk-forward backtest of predict.
  *
+ * Window is computed automatically: 75% of candles for fitting, 25% for testing.
+ * Throws if fewer than 61 candles (50 min window + 10 test points + 1).
  * Returns true if the model's hit rate meets the required threshold.
  * Default threshold is 68% (±1σ should contain ~68% of moves).
  */
 export function backtest(
   candles: Candle[],
   interval: CandleInterval,
-  window: number,
   requiredPercent = BACKTEST_REQUIRED_PERCENT,
 ): boolean {
+  const minCandles = BACKTEST_MIN_WINDOW + BACKTEST_MIN_POINTS + 1;
+  if (candles.length < minCandles) {
+    throw new Error(`Need at least ${minCandles} candles for backtest, got ${candles.length}`);
+  }
+
+  const window = Math.max(BACKTEST_MIN_WINDOW, Math.floor(candles.length * BACKTEST_WINDOW_RATIO));
   let hits = 0;
   let total = 0;
 
@@ -178,7 +188,6 @@ export function backtest(
     total++;
   }
 
-  if (total === 0) return false;
   return (hits / total) * 100 >= requiredPercent;
 }
 
