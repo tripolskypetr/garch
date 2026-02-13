@@ -179,10 +179,74 @@ declare function sampleVarianceWithMean(returns: number[]): number;
  */
 declare function checkLeverageEffect(returns: number[]): LeverageStats;
 /**
+ * Garman-Klass (1980) variance estimator using OHLC data.
+ *
+ * σ²_GK = (1/n) Σ [ 0.5·(ln(H/L))² − (2ln2−1)·(ln(C/O))² ]
+ *
+ * ~5x more efficient than close-to-close variance.
+ */
+declare function garmanKlassVariance(candles: Candle[]): number;
+/**
+ * Yang-Zhang (2000) variance estimator using OHLC data.
+ *
+ * Combines overnight (open vs prev close), open-to-close,
+ * and Rogers-Satchell components. More efficient than Garman-Klass
+ * and handles overnight gaps (relevant for stocks).
+ *
+ * σ²_YZ = σ²_overnight + k·σ²_close + (1−k)·σ²_RS
+ */
+declare function yangZhangVariance(candles: Candle[]): number;
+/**
  * Expected value of |Z| where Z ~ N(0,1)
  * E[|Z|] = sqrt(2/π)
  */
 declare const EXPECTED_ABS_NORMAL: number;
+/**
+ * Ljung-Box test for autocorrelation.
+ *
+ * Q = n(n+2) Σ(k=1..m) ρ²_k / (n−k)
+ *
+ * Under H₀ (no autocorrelation), Q ~ χ²(m).
+ * Use on squared standardized residuals to test GARCH adequacy.
+ */
+declare function ljungBox(data: number[], maxLag: number): {
+    statistic: number;
+    pValue: number;
+};
+
+type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
+interface PredictionResult {
+    currentPrice: number;
+    sigma: number;
+    move: number;
+    upperPrice: number;
+    lowerPrice: number;
+    modelType: 'garch' | 'egarch';
+    reliable: boolean;
+}
+/**
+ * Forecast expected price range for t+1 (next candle).
+ *
+ * Auto-selects GARCH or EGARCH based on leverage effect.
+ * Returns ±1σ price corridor so you can set SL/TP yourself.
+ */
+declare function predict(candles: Candle[], interval: CandleInterval, currentPrice?: number): PredictionResult;
+/**
+ * Forecast expected price range over multiple candles.
+ *
+ * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
+ * Use for swing trades where you hold across multiple candles.
+ */
+declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number): PredictionResult;
+/**
+ * Walk-forward backtest of predict.
+ *
+ * Window is computed automatically: 75% of candles for fitting, 25% for testing.
+ * Throws if not enough candles for the given interval.
+ * Returns true if the model's hit rate meets the required threshold.
+ * Default threshold is 68% (±1σ should contain ~68% of moves).
+ */
+declare function backtest(candles: Candle[], interval: CandleInterval, requiredPercent?: number): boolean;
 
 declare function nelderMead(fn: (x: number[]) => number, x0: number[], options?: {
     maxIter?: number;
@@ -193,5 +257,5 @@ declare function nelderMead(fn: (x: number[]) => number, x0: number[], options?:
     sigma?: number;
 }): OptimizerResult;
 
-export { EXPECTED_ABS_NORMAL, Egarch, Garch, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, checkLeverageEffect, nelderMead, sampleVariance, sampleVarianceWithMean };
-export type { CalibrationResult, Candle, EgarchOptions, EgarchParams, GarchOptions, GarchParams, LeverageStats, OptimizerResult, VolatilityForecast };
+export { EXPECTED_ABS_NORMAL, Egarch, Garch, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, checkLeverageEffect, garmanKlassVariance, ljungBox, nelderMead, predict, predictRange, sampleVariance, sampleVarianceWithMean, yangZhangVariance };
+export type { CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, LeverageStats, OptimizerResult, PredictionResult, VolatilityForecast };
