@@ -3,6 +3,7 @@ import {
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
+  perCandleParkinson,
   calculateAIC,
   calculateBIC,
 } from './utils.js';
@@ -169,16 +170,7 @@ export class HarRv {
       const candles = data as Candle[];
       this.returns = calculateReturns(candles);
       // Parkinson (1980) per-candle RV: (1/(4·ln2))·(ln(H/L))²
-      // rv[i] aligned with returns[i], using candle[i+1]'s OHLC
-      const coeff = 1 / (4 * Math.LN2);
-      this.rv = [];
-      for (let i = 0; i < this.returns.length; i++) {
-        const c = candles[i + 1];
-        const hl = Math.log(c.high / c.low);
-        const parkinson = coeff * hl * hl;
-        // Fall back to r² if high === low (zero range)
-        this.rv.push(parkinson > 0 ? parkinson : this.returns[i] * this.returns[i]);
-      }
+      this.rv = perCandleParkinson(candles, this.returns);
     }
   }
 

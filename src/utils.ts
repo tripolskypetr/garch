@@ -138,6 +138,27 @@ export function yangZhangVariance(candles: Candle[]): number {
 }
 
 /**
+ * Per-candle Parkinson (1980) realized variance proxy.
+ *
+ * RV_i = (1/(4·ln2)) · ln(H/L)²
+ *
+ * ~5× more efficient than squared returns. Falls back to r² when H === L.
+ * rv[i] aligned with returns[i], using candles[i+1]'s OHLC.
+ */
+export function perCandleParkinson(candles: Candle[], returns: number[]): number[] {
+  const coeff = 1 / (4 * Math.LN2);
+  const rv: number[] = [];
+  for (let i = 0; i < returns.length; i++) {
+    const c = candles[i + 1];
+    const hl = Math.log(c.high / c.low);
+    const parkinson = coeff * hl * hl;
+    // Fall back to r² if high === low (zero range)
+    rv.push(parkinson > 0 ? parkinson : returns[i] * returns[i]);
+  }
+  return rv;
+}
+
+/**
  * Expected value of |Z| where Z ~ N(0,1)
  * E[|Z|] = sqrt(2/π)
  */

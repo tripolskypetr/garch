@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Missing GARCH/EGARCH/HAR-RV/NoVaS forecast for NodeJS</strong><br>
+  <strong>Missing Realized GARCH/Realized EGARCH/HAR-RV/NoVaS forecast for NodeJS</strong><br>
   GARCH, EGARCH, HAR-RV and NoVaS volatility models for TypeScript. Zero dependencies.
 </p>
 

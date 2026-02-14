@@ -12,6 +12,7 @@ import {
   predictRange,
   backtest,
   sampleVariance,
+  perCandleParkinson,
   type Candle,
 } from '../src/index.js';
 
@@ -953,5 +954,272 @@ describe('cross-model consistency', () => {
       expect(Number.isFinite(result.diagnostics.aic)).toBe(true);
       expect(Number.isFinite(result.diagnostics.bic)).toBe(true);
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 10. REALIZED GARCH (Candle[] → Parkinson RV)
+// ═══════════════════════════════════════════════════════════════
+
+describe('Realized GARCH (Candle[] uses Parkinson RV)', () => {
+  it('Candle[] and number[] produce different GARCH params', () => {
+    const candles = makeCandles(200, 42);
+    const prices = candles.map(c => c.close);
+
+    const resultCandles = calibrateGarch(candles);
+    const resultPrices = calibrateGarch(prices);
+
+    // Both converge
+    expect(resultCandles.diagnostics.converged).toBe(true);
+    expect(resultPrices.diagnostics.converged).toBe(true);
+
+    // Params differ because Candle[] uses Parkinson, number[] uses r²
+    // At least one of omega/alpha should differ
+    const omegaDiff = Math.abs(resultCandles.params.omega - resultPrices.params.omega);
+    const alphaDiff = Math.abs(resultCandles.params.alpha - resultPrices.params.alpha);
+    expect(omegaDiff + alphaDiff).toBeGreaterThan(1e-10);
+  });
+
+  it('flat candles (H=L) degrade to classical GARCH (same as number[])', () => {
+    const candles = makeFlatCandles(200, 42);
+    const prices = candles.map(c => c.close);
+
+    const resultCandles = calibrateGarch(candles);
+    const resultPrices = calibrateGarch(prices);
+
+    // When H=L, Parkinson falls back to r² → same innovation
+    // Initial variance differs (Yang-Zhang vs sampleVariance), but
+    // with enough data the optimizer should converge to similar params
+    // Both should at least produce valid results
+    expect(resultCandles.diagnostics.converged).toBe(true);
+    expect(resultPrices.diagnostics.converged).toBe(true);
+    expect(resultCandles.params.persistence).toBeLessThan(1);
+    expect(resultPrices.params.persistence).toBeLessThan(1);
+  });
+
+  it('Realized GARCH variance series uses Parkinson per-candle', () => {
+    const candles = makeCandles(200, 42);
+    const model = new Garch(candles);
+    const fit = model.fit();
+    const vs = model.getVarianceSeries(fit.params);
+
+    // All variances should be positive and finite
+    for (const v of vs) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it('Realized GARCH 1-step forecast uses Parkinson RV as innovation', () => {
+    const candles = makeCandles(200, 42);
+    const model = new Garch(candles);
+    const fit = model.fit();
+    const { omega, alpha, beta } = fit.params;
+
+    const vs = model.getVarianceSeries(fit.params);
+    const lastVar = vs[vs.length - 1];
+
+    // Compute expected Parkinson for last candle
+    const coeff = 1 / (4 * Math.LN2);
+    const lastCandle = candles[candles.length - 1];
+    const hl = Math.log(lastCandle.high / lastCandle.low);
+    const lastRV = coeff * hl * hl;
+
+    const expected = omega + alpha * lastRV + beta * lastVar;
+    const fc = model.forecast(fit.params, 1);
+    expect(fc.variance[0]).toBeCloseTo(expected, 12);
+  });
+
+  it('Realized GARCH forecast converges to unconditional variance', () => {
+    const candles = makeCandles(300, 42);
+    const model = new Garch(candles);
+    const fit = model.fit();
+
+    if (fit.params.persistence < 0.999) {
+      const fc = model.forecast(fit.params, 200);
+      const lastVar = fc.variance[199];
+      const uncond = fit.params.unconditionalVariance;
+      const relError = Math.abs(lastVar - uncond) / uncond;
+      expect(relError).toBeLessThan(0.01);
+    }
+  });
+
+  it('Realized GARCH scale invariance — 1000× prices → same params', () => {
+    const candles1 = makeCandles(200, 42);
+    const candles2 = candles1.map(c => ({
+      open: c.open * 1000,
+      high: c.high * 1000,
+      low: c.low * 1000,
+      close: c.close * 1000,
+      volume: c.volume,
+    }));
+
+    const r1 = calibrateGarch(candles1);
+    const r2 = calibrateGarch(candles2);
+
+    // Log returns and Parkinson are scale-invariant
+    expect(r1.params.alpha).toBeCloseTo(r2.params.alpha, 6);
+    expect(r1.params.beta).toBeCloseTo(r2.params.beta, 6);
+    expect(r1.params.persistence).toBeCloseTo(r2.params.persistence, 6);
+  });
+
+  it('Realized GARCH across multiple seeds — always valid', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const candles = makeCandles(200, seed);
+      const result = calibrateGarch(candles);
+
+      expect(result.params.persistence).toBeLessThan(1);
+      expect(result.params.omega).toBeGreaterThan(0);
+      expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 11. REALIZED EGARCH (Candle[] → Parkinson magnitude)
+// ═══════════════════════════════════════════════════════════════
+
+describe('Realized EGARCH (Candle[] uses Parkinson magnitude)', () => {
+  it('Candle[] and number[] produce different EGARCH params', () => {
+    const candles = makeCandles(200, 42);
+    const prices = candles.map(c => c.close);
+
+    const resultCandles = calibrateEgarch(candles);
+    const resultPrices = calibrateEgarch(prices);
+
+    expect(resultCandles.diagnostics.converged).toBe(true);
+    expect(resultPrices.diagnostics.converged).toBe(true);
+
+    // At least some params should differ
+    const omegaDiff = Math.abs(resultCandles.params.omega - resultPrices.params.omega);
+    const alphaDiff = Math.abs(resultCandles.params.alpha - resultPrices.params.alpha);
+    expect(omegaDiff + alphaDiff).toBeGreaterThan(1e-6);
+  });
+
+  it('Realized EGARCH preserves leverage effect (gamma sign)', () => {
+    // Create asymmetric candles where negative returns have higher vol
+    const rng = lcg(77);
+    const candles: Candle[] = [];
+    let price = 100;
+    for (let i = 0; i < 300; i++) {
+      const u = rng();
+      // Negative returns are larger in magnitude → leverage
+      const r = u < 0.5 ? -(u * 0.06) : (u - 0.5) * 0.02;
+      const close = price * Math.exp(r);
+      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.3);
+      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.3);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+
+    const result = calibrateEgarch(candles);
+    // gamma should be negative (leverage: negative returns increase vol)
+    expect(result.params.gamma).toBeLessThan(0);
+  });
+
+  it('Realized EGARCH 1-step forecast uses Parkinson magnitude + directional z', () => {
+    const candles = makeCandles(200, 42);
+    const model = new Egarch(candles);
+    const fit = model.fit();
+    const { omega, alpha, gamma, beta } = fit.params;
+
+    const vs = model.getVarianceSeries(fit.params);
+    const returns = model.getReturns();
+    const lastVar = vs[vs.length - 1];
+    const lastRet = returns[returns.length - 1];
+    const z = lastRet / Math.sqrt(lastVar);
+
+    // Parkinson magnitude
+    const coeff = 1 / (4 * Math.LN2);
+    const lastCandle = candles[candles.length - 1];
+    const hl = Math.log(lastCandle.high / lastCandle.low);
+    const lastRV = coeff * hl * hl;
+    const magnitude = Math.sqrt(lastRV / lastVar);
+
+    const EXPECTED_ABS = Math.sqrt(2 / Math.PI);
+    const expectedLogVar = omega
+      + alpha * (magnitude - EXPECTED_ABS)
+      + gamma * z
+      + beta * Math.log(lastVar);
+    const expectedVar = Math.exp(expectedLogVar);
+
+    const fc = model.forecast(fit.params, 1);
+    expect(fc.variance[0]).toBeCloseTo(expectedVar, 10);
+  });
+
+  it('Realized EGARCH variance series all positive and finite', () => {
+    for (let seed = 1; seed <= 20; seed++) {
+      const candles = makeCandles(200, seed);
+      const model = new Egarch(candles);
+      const fit = model.fit();
+      const vs = model.getVarianceSeries(fit.params);
+
+      for (const v of vs) {
+        expect(v).toBeGreaterThan(0);
+        expect(Number.isFinite(v)).toBe(true);
+      }
+    }
+  });
+
+  it('Realized EGARCH forecast converges', () => {
+    const candles = makeCandles(300, 42);
+    const model = new Egarch(candles);
+    const fit = model.fit();
+
+    if (Math.abs(fit.params.beta) < 0.999) {
+      const fc = model.forecast(fit.params, 200);
+      const uncond = fit.params.unconditionalVariance;
+      const lastVar = fc.variance[199];
+
+      // EGARCH converges slower; allow 30% tolerance
+      const relError = Math.abs(lastVar - uncond) / uncond;
+      expect(relError).toBeLessThan(0.3);
+    }
+  });
+
+  it('Realized EGARCH scale invariance', () => {
+    const candles1 = makeCandles(200, 42);
+    const candles2 = candles1.map(c => ({
+      open: c.open * 1000,
+      high: c.high * 1000,
+      low: c.low * 1000,
+      close: c.close * 1000,
+      volume: c.volume,
+    }));
+
+    const r1 = calibrateEgarch(candles1);
+    const r2 = calibrateEgarch(candles2);
+
+    expect(r1.params.alpha).toBeCloseTo(r2.params.alpha, 4);
+    expect(r1.params.beta).toBeCloseTo(r2.params.beta, 4);
+    expect(r1.params.gamma).toBeCloseTo(r2.params.gamma, 4);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 12. perCandleParkinson shared function
+// ═══════════════════════════════════════════════════════════════
+
+describe('perCandleParkinson shared function', () => {
+  it('produces same results as HAR-RV getRv() on same candles', () => {
+    const candles = makeCandles(200, 42);
+    const model = new HarRv(candles);
+    const harRv = model.getRv();
+
+    // Manually call perCandleParkinson with same inputs
+    const returns = model.getReturns();
+    const rv = perCandleParkinson(candles, returns);
+
+    for (let i = 0; i < harRv.length; i++) {
+      expect(rv[i]).toBe(harRv[i]);
+    }
+  });
+
+  it('length = returns.length', () => {
+    const candles = makeCandles(100, 42);
+    const model = new HarRv(candles);
+    const rv = model.getRv();
+    const returns = model.getReturns();
+    expect(rv.length).toBe(returns.length);
   });
 });

@@ -5,6 +5,7 @@ import {
   calculateReturnsFromPrices,
   sampleVariance,
   yangZhangVariance,
+  perCandleParkinson,
   calculateAIC,
   calculateBIC,
 } from './utils.js';
@@ -28,6 +29,7 @@ export interface GarchOptions {
  */
 export class Garch {
   private returns: number[];
+  private rv: number[] | null;
   private periodsPerYear: number;
   private initialVariance: number;
 
@@ -42,10 +44,13 @@ export class Garch {
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
       this.initialVariance = sampleVariance(this.returns);
+      this.rv = null;
     } else {
       const candles = data as Candle[];
       this.returns = calculateReturns(candles);
       this.initialVariance = yangZhangVariance(candles);
+      // Parkinson (1980) per-candle RV: ~5× more efficient than r²
+      this.rv = perCandleParkinson(candles, this.returns);
     }
   }
 
@@ -57,6 +62,8 @@ export class Garch {
     const returns = this.returns;
     const n = returns.length;
     const initVar = this.initialVariance;
+
+    const rv = this.rv;
 
     // Negative log-likelihood function
     function negLogLikelihood(params: number[]): number {
@@ -72,7 +79,9 @@ export class Garch {
 
       for (let i = 0; i < n; i++) {
         if (i > 0) {
-          variance = omega + alpha * returns[i - 1] ** 2 + beta * variance;
+          // Candle[] → Parkinson RV (realized), number[] → r² (classical)
+          const innovation = rv ? rv[i - 1] : returns[i - 1] ** 2;
+          variance = omega + alpha * innovation + beta * variance;
         }
 
         if (variance <= 1e-12) return 1e10;
@@ -129,7 +138,8 @@ export class Garch {
       if (i === 0) {
         variance.push(this.initialVariance);
       } else {
-        const v = omega + alpha * this.returns[i - 1] ** 2 + beta * variance[i - 1];
+        const innovation = this.rv ? this.rv[i - 1] : this.returns[i - 1] ** 2;
+        const v = omega + alpha * innovation + beta * variance[i - 1];
         variance.push(v);
       }
     }
@@ -147,10 +157,12 @@ export class Garch {
     // Get last variance
     const varianceSeries = this.getVarianceSeries(params);
     const lastVariance = varianceSeries[varianceSeries.length - 1];
-    const lastReturn = this.returns[this.returns.length - 1];
+    const lastInnovation = this.rv
+      ? this.rv[this.rv.length - 1]
+      : this.returns[this.returns.length - 1] ** 2;
 
     // One-step ahead
-    let v = omega + alpha * lastReturn ** 2 + beta * lastVariance;
+    let v = omega + alpha * lastInnovation + beta * lastVariance;
     variance.push(v);
 
     // Multi-step ahead (converges to unconditional variance)

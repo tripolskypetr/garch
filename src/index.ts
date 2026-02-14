@@ -13,6 +13,7 @@ export {
   checkLeverageEffect,
   garmanKlassVariance,
   yangZhangVariance,
+  perCandleParkinson,
   ljungBox,
   EXPECTED_ABS_NORMAL,
 } from './utils.js';

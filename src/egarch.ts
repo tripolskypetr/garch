@@ -5,6 +5,7 @@ import {
   calculateReturnsFromPrices,
   sampleVariance,
   yangZhangVariance,
+  perCandleParkinson,
   calculateAIC,
   calculateBIC,
   EXPECTED_ABS_NORMAL,
@@ -31,6 +32,7 @@ export interface EgarchOptions {
  */
 export class Egarch {
   private returns: number[];
+  private rv: number[] | null;
   private periodsPerYear: number;
   private initialVariance: number;
 
@@ -44,10 +46,13 @@ export class Egarch {
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
       this.initialVariance = sampleVariance(this.returns);
+      this.rv = null;
     } else {
       const candles = data as Candle[];
       this.returns = calculateReturns(candles);
       this.initialVariance = yangZhangVariance(candles);
+      // Parkinson (1980) per-candle RV: ~5× more efficient than r²
+      this.rv = perCandleParkinson(candles, this.returns);
     }
   }
 
@@ -59,6 +64,8 @@ export class Egarch {
     const returns = this.returns;
     const n = returns.length;
     const initLogVar = Math.log(this.initialVariance);
+
+    const rv = this.rv;
 
     function negLogLikelihood(params: number[]): number {
       const [omega, alpha, gamma, beta] = params;
@@ -73,10 +80,15 @@ export class Egarch {
       for (let i = 0; i < n; i++) {
         if (i > 0) {
           const sigma = Math.sqrt(variance);
-          const z = returns[i - 1] / sigma;
+          const z = returns[i - 1] / sigma; // directional — kept for leverage
+
+          // Magnitude: √(RV/σ²) for candles, |z| for prices
+          const magnitude = rv
+            ? Math.sqrt(rv[i - 1] / variance)
+            : Math.abs(z);
 
           logVariance = omega
-            + alpha * (Math.abs(z) - EXPECTED_ABS_NORMAL)
+            + alpha * (magnitude - EXPECTED_ABS_NORMAL)
             + gamma * z
             + beta * logVariance;
 
@@ -152,9 +164,12 @@ export class Egarch {
       } else {
         const sigma = Math.sqrt(variance[i - 1]);
         const z = this.returns[i - 1] / sigma;
+        const magnitude = this.rv
+          ? Math.sqrt(this.rv[i - 1] / variance[i - 1])
+          : Math.abs(z);
 
         logVariance = omega
-          + alpha * (Math.abs(z) - EXPECTED_ABS_NORMAL)
+          + alpha * (magnitude - EXPECTED_ABS_NORMAL)
           + gamma * z
           + beta * logVariance;
 
@@ -184,8 +199,11 @@ export class Egarch {
     // One-step ahead using actual last return
     const sigma = Math.sqrt(lastVariance);
     const z = lastReturn / sigma;
+    const magnitude = this.rv
+      ? Math.sqrt(this.rv[this.rv.length - 1] / lastVariance)
+      : Math.abs(z);
     let logVariance = omega
-      + alpha * (Math.abs(z) - EXPECTED_ABS_NORMAL)
+      + alpha * (magnitude - EXPECTED_ABS_NORMAL)
       + gamma * z
       + beta * Math.log(lastVariance);
 

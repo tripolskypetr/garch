@@ -567,19 +567,23 @@ describe('backtest edge cases', () => {
 // ── 12. Forecast values: manual verification ────────────────
 
 describe('GARCH forecast manual verification', () => {
-  it('1-step forecast matches manual σ² = ω + α·ε² + β·σ²', () => {
+  it('1-step forecast matches manual σ² = ω + α·RV + β·σ²', () => {
     const candles = makeCandles(200, 2001);
     const model = new Garch(candles, { periodsPerYear: 2190 });
     const fit = model.fit();
     const { omega, alpha, beta } = fit.params;
 
     const varSeries = model.getVarianceSeries(fit.params);
-    const returns = model.getReturns();
     const lastVar = varSeries[varSeries.length - 1];
-    const lastRet = returns[returns.length - 1];
 
-    // Manual one-step ahead
-    const expectedVar = omega + alpha * lastRet ** 2 + beta * lastVar;
+    // Candle[] input → Parkinson RV used as innovation
+    const coeff = 1 / (4 * Math.LN2);
+    const lastCandle = candles[candles.length - 1];
+    const hl = Math.log(lastCandle.high / lastCandle.low);
+    const lastRV = coeff * hl * hl;
+
+    // Manual one-step ahead with Parkinson innovation
+    const expectedVar = omega + alpha * lastRV + beta * lastVar;
 
     const forecast = model.forecast(fit.params, 1);
     expect(forecast.variance[0]).toBeCloseTo(expectedVar, 15);
@@ -612,7 +616,7 @@ describe('GARCH forecast manual verification', () => {
 });
 
 describe('EGARCH forecast manual verification', () => {
-  it('1-step forecast uses actual last z', () => {
+  it('1-step forecast uses actual last z and Parkinson magnitude', () => {
     const candles = makeAsymmetricCandles(200, 3001);
     const model = new Egarch(candles, { periodsPerYear: 2190 });
     const fit = model.fit();
@@ -624,8 +628,15 @@ describe('EGARCH forecast manual verification', () => {
     const lastRet = returns[returns.length - 1];
     const z = lastRet / Math.sqrt(lastVar);
 
+    // Candle[] → magnitude uses √(RV/σ²) instead of |z|
+    const coeff = 1 / (4 * Math.LN2);
+    const lastCandle = candles[candles.length - 1];
+    const hl = Math.log(lastCandle.high / lastCandle.low);
+    const lastRV = coeff * hl * hl;
+    const magnitude = Math.sqrt(lastRV / lastVar);
+
     const expectedLogVar = omega
-      + alpha * (Math.abs(z) - EXPECTED_ABS_NORMAL)
+      + alpha * (magnitude - EXPECTED_ABS_NORMAL)
       + gamma * z
       + beta * Math.log(lastVar);
     const expectedVar = Math.exp(expectedLogVar);
