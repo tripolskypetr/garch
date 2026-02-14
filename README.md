@@ -157,7 +157,16 @@ Lower timeframes contain more microstructure noise — use larger datasets to co
 
 ### GARCH(1,1)
 
-Conditional variance model (Bollerslev, 1986):
+Conditional variance model (Bollerslev, 1986). Input type determines the innovation term automatically:
+
+**Candle[] input** — Realized GARCH (Hansen & Huang, 2016). Uses Parkinson (1980) per-candle realized variance proxy (~5× more efficient than squared returns):
+
+```
+sigma_t^2 = omega + alpha * RV_{t-1} + beta * sigma_{t-1}^2
+RV_t = (1 / (4·ln2)) · ln(H/L)^2     (Parkinson estimator)
+```
+
+**number[] input** — Classical GARCH. Uses squared returns:
 
 ```
 sigma_t^2 = omega + alpha * epsilon_{t-1}^2 + beta * sigma_{t-1}^2
@@ -175,7 +184,7 @@ Parameter estimation via **Gaussian MLE** (maximum likelihood):
 LL = -0.5 * sum[ ln(sigma_t^2) + epsilon_t^2 / sigma_t^2 ]
 ```
 
-Multi-step forecast converges to unconditional variance:
+Multi-step forecast converges to unconditional variance (E[RV] = sigma^2, so recursion is identical):
 
 ```
 sigma_{t+h}^2 = omega + (alpha + beta) * sigma_{t+h-1}^2
@@ -183,7 +192,15 @@ sigma_{t+h}^2 = omega + (alpha + beta) * sigma_{t+h-1}^2
 
 ### EGARCH(1,1)
 
-Exponential GARCH (Nelson, 1991). Models log-variance, capturing asymmetric volatility:
+Exponential GARCH (Nelson, 1991). Models log-variance, capturing asymmetric volatility. Input type determines the magnitude term automatically:
+
+**Candle[] input** — Realized EGARCH. Magnitude uses Parkinson RV, leverage keeps directional return:
+
+```
+ln(sigma_t^2) = omega + alpha * (sqrt(RV_{t-1} / sigma_{t-1}^2) - sqrt(2/pi)) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
+```
+
+**number[] input** — Classical EGARCH. Magnitude uses |z|:
 
 ```
 ln(sigma_t^2) = omega + alpha * (|z_{t-1}| - sqrt(2/pi)) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
@@ -191,6 +208,7 @@ ln(sigma_t^2) = omega + alpha * (|z_{t-1}| - sqrt(2/pi)) + gamma * z_{t-1} + bet
 
 Where **z_t = epsilon_t / sigma_t** is the standardized residual, **sqrt(2/pi) ~ 0.7979**.
 
+- **sqrt(RV/sigma^2)** is a more efficient estimate of |z| from OHLC data
 - **gamma** < 0 — leverage effect (negative returns increase vol more than positive)
 - No positivity constraints needed (log-variance is always real)
 - Stationarity: **|beta| < 1**
@@ -275,6 +293,8 @@ fitModel()
   \-- return min(AIC_1, AIC_2, AIC_3)
 ```
 
+When given `Candle[]`, all three OHLC-aware models (GARCH, EGARCH, HAR-RV) use Parkinson per-candle RV instead of squared returns, extracting ~5× more information from the same data.
+
 GARCH/EGARCH tends to win on data with pronounced shock reactions or leverage effects. HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). NoVaS tends to win on short, volatile data where parametric assumptions break down.
 
 ### Variance Estimators
@@ -317,11 +337,12 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 
 ## Tests
 
-**647 tests** across **19 test files**. All passing.
+**712 tests** across **20 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
 | Mathematical formulas | `math.test.ts` | 45 | GARCH/EGARCH variance recursion, log-likelihood, forecast formulas, AIC/BIC, Yang-Zhang, Garman-Klass, Ljung-Box, chi-squared |
+| Math coverage | `math-coverage.test.ts` | 65 | Parkinson formula verification, rv↔returns alignment, H=L fallback, Parkinson-based forecast, candle validation, reliable flag cascade, backtest validity, numerical precision, cross-model consistency, Realized GARCH/EGARCH Candle[] vs number[], perCandleParkinson shared function |
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
