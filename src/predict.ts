@@ -21,6 +21,19 @@ const MIN_CANDLES: Record<CandleInterval, number> = {
   '8h': 150,
 };
 
+const RECOMMENDED_CANDLES: Record<CandleInterval, number> = {
+  '1m': 1500,
+  '3m': 1500,
+  '5m': 1500,
+  '15m': 1000,
+  '30m': 1000,
+  '1h': 500,
+  '2h': 500,
+  '4h': 500,
+  '6h': 300,
+  '8h': 300,
+};
+
 const INTERVALS_PER_YEAR: Record<CandleInterval, number> = {
   '1m': 525_600,
   '3m': 175_200,
@@ -54,6 +67,12 @@ function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
     if (!isFinite(c.close) || c.close <= 0) {
       throw new Error(`Invalid close price at candle ${i}: ${c.close}`);
     }
+  }
+  const recommended = RECOMMENDED_CANDLES[interval];
+  if (candles.length < recommended) {
+    console.warn(
+      `[garch] ${interval}: ${candles.length} candles provided, recommend ≥${recommended} for reliable results. Check reliable: true in output.`,
+    );
   }
 }
 

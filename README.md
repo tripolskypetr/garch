@@ -122,18 +122,20 @@ backtest(candles, '4h', 50); // true  -- hit rate >= 50% (custom)
 
 ## Supported Intervals
 
-| Interval | Min Candles | Periods/Year | Coverage |
-|----------|-------------|--------------|----------|
-| `1m` | 500 | 525,600 | ~8-16 hours |
-| `3m` | 500 | 175,200 | ~25 hours |
-| `5m` | 500 | 105,120 | ~1.7 days |
-| `15m` | 300 | 35,040 | ~3 days |
-| `30m` | 200 | 17,520 | ~4 days |
-| `1h` | 200 | 8,760 | ~8 days |
-| `2h` | 200 | 4,380 | ~17 days |
-| `4h` | 200 | 2,190 | ~33 days |
-| `6h` | 150 | 1,460 | ~37 days |
-| `8h` | 150 | 1,095 | ~50 days |
+| Interval | Min Candles | Recommended | Periods/Year | Coverage |
+|----------|-------------|-------------|--------------|----------|
+| `1m` | 500 | 1,500 | 525,600 | ~8-16 hours |
+| `3m` | 500 | 1,500 | 175,200 | ~25 hours |
+| `5m` | 500 | 1,500 | 105,120 | ~1.7 days |
+| `15m` | 300 | 1,000 | 35,040 | ~3 days |
+| `30m` | 200 | 1,000 | 17,520 | ~4 days |
+| `1h` | 200 | 500 | 8,760 | ~8 days |
+| `2h` | 200 | 500 | 4,380 | ~17 days |
+| `4h` | 200 | 500 | 2,190 | ~33 days |
+| `6h` | 150 | 300 | 1,460 | ~37 days |
+| `8h` | 150 | 300 | 1,095 | ~50 days |
+
+For intervals below 1h, per-candle Parkinson RV is noisier — more data helps OLS and QLIKE model selection. A `console.warn` is emitted when candle count is below the recommended value. Always check `reliable: true` in the output.
 
 ## Timeframes
 

@@ -842,18 +842,20 @@ describe('Realized NoVaS (Candle[] uses Parkinson RV)', () => {
     expect(fc.variance[0]).toBeCloseTo(expected, 12);
   });
 
-  it('Realized NoVaS forecast converges', () => {
+  it('Realized NoVaS forecast converges to OLS-rescaled fixed point', () => {
     const candles = makeCandles(200, 42);
     const model = new NoVaS(candles);
     const fit = model.fit();
+    const { weights, forecastWeights, persistence } = fit.params;
+    const [beta0, beta1] = forecastWeights;
 
-    if (fit.params.persistence < 0.999) {
+    if (persistence < 0.999 && beta1 * persistence < 1) {
+      // True fixed point: v* = (β₀ + β₁·w[0]) / (1 - β₁·persistence)
+      const fixedPoint = (beta0 + beta1 * weights[0]) / (1 - beta1 * persistence);
       const fc = model.forecast(fit.params, 200);
       const lastVar = fc.variance[199];
-      const uncond = fit.params.unconditionalVariance;
-      const relError = Math.abs(lastVar - uncond) / uncond;
-      // OLS forecastWeights may converge to a slightly different level than D² unconditionalVariance
-      expect(relError).toBeLessThan(0.1);
+      const relError = Math.abs(lastVar - fixedPoint) / fixedPoint;
+      expect(relError).toBeLessThan(0.01);
     }
   });
 

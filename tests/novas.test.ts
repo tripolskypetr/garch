@@ -270,17 +270,19 @@ describe('NoVaS', () => {
       expect(fc.annualized).toEqual([]);
     });
 
-    it('multi-step forecasts converge toward unconditional variance', () => {
+    it('multi-step forecasts converge toward OLS-rescaled fixed point', () => {
       const prices = generatePrices(500);
       const model = new NoVaS(prices);
       const fit = model.fit();
-      if (fit.params.persistence > 0 && fit.params.persistence < 1) {
+      const { weights, forecastWeights, persistence } = fit.params;
+      const [beta0, beta1] = forecastWeights;
+      if (persistence > 0 && persistence < 1 && beta1 * persistence < 1) {
+        // True fixed point: v* = (β₀ + β₁·w[0]) / (1 - β₁·persistence)
+        const fixedPoint = (beta0 + beta1 * weights[0]) / (1 - beta1 * persistence);
         const fc = model.forecast(fit.params, 100);
         const lastVar = fc.variance[99];
-        const uncond = fit.params.unconditionalVariance;
-        const diff = Math.abs(lastVar - uncond) / uncond;
-        // OLS forecastWeights may converge to a different level than D² unconditionalVariance
-        expect(diff).toBeLessThan(1.0);
+        const diff = Math.abs(lastVar - fixedPoint) / fixedPoint;
+        expect(diff).toBeLessThan(0.01);
       }
     });
 
@@ -956,6 +958,8 @@ describe('NoVaS regression snapshot', () => {
     expect(result.params.lags).toBe(10);
     expect(result.params.weights.length).toBe(11);
     expect(result.params.forecastWeights.length).toBe(2); // [β₀, β₁] OLS rescaling
+    expect(result.params.forecastWeights[0]).toBeCloseTo(0.00006829304486657933, 10);
+    expect(result.params.forecastWeights[1]).toBeCloseTo(0.6493868518433975, 10);
     // D² initial guess fix: lag weights are dimensionless (not scaled by initVar)
     expect(result.params.persistence).toBeCloseTo(0.5562665978208847, 10);
     expect(result.params.dSquared).toBeCloseTo(3.683999724163274e-9, 6);
