@@ -396,6 +396,7 @@ describe('EGARCH logVariance clamp', () => {
       unconditionalVariance: Math.exp(100 / 0.9),
       annualizedVol: 0,
       leverageEffect: 0,
+      df: 30,
     };
     const vHigh = model.getVarianceSeries(paramsHigh);
 
@@ -414,6 +415,7 @@ describe('EGARCH logVariance clamp', () => {
       unconditionalVariance: Math.exp(-100 / 0.9),
       annualizedVol: 0,
       leverageEffect: 0,
+      df: 30,
     };
     const vLow = model.getVarianceSeries(paramsLow);
 
@@ -460,6 +462,7 @@ describe('Forecast with near-unit persistence', () => {
       persistence: 0.998,
       unconditionalVariance: 1e-7 / (1 - 0.998),
       annualizedVol: Math.sqrt((1e-7 / 0.002) * 252) * 100,
+      df: 30,
     };
 
     const fc = model.forecast(params, 1000);
@@ -486,6 +489,7 @@ describe('Forecast with near-unit persistence', () => {
       unconditionalVariance: Math.exp(-0.01 / (1 - 0.998)),
       annualizedVol: 0,
       leverageEffect: -0.05,
+      df: 30,
     };
 
     const fc = model.forecast(params, 1000);

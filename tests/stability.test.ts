@@ -80,6 +80,7 @@ describe('Numerical stability', () => {
       unconditionalVariance: 0,
       annualizedVol: 0,
       leverageEffect: 3,
+      df: 30,
     });
 
     for (const v of series) {

@@ -73,22 +73,24 @@ function generateEgarchData(
   return prices;
 }
 
-function garchParams(omega: number, alpha: number, beta: number) {
+function garchParams(omega: number, alpha: number, beta: number, df = 30) {
   const persistence = alpha + beta;
   return {
     omega, alpha, beta, persistence,
     unconditionalVariance: omega / (1 - persistence),
     annualizedVol: Math.sqrt((omega / (1 - persistence)) * 252) * 100,
+    df,
   };
 }
 
-function egarchParams(omega: number, alpha: number, gamma: number, beta: number) {
+function egarchParams(omega: number, alpha: number, gamma: number, beta: number, df = 30) {
   return {
     omega, alpha, gamma, beta,
     persistence: beta,
     unconditionalVariance: Math.exp(omega / (1 - beta)),
     annualizedVol: Math.sqrt(Math.exp(omega / (1 - beta)) * 252) * 100,
     leverageEffect: gamma,
+    df,
   };
 }
 
@@ -216,7 +218,7 @@ describe('EGARCH log-variance recursion', () => {
       const sigma = Math.sqrt(series[i - 1]);
       const z = returns[i - 1] / sigma;
       logVar = params.omega
-        + params.alpha * (Math.abs(z) - EXPECTED_ABS_NORMAL)
+        + params.alpha * (Math.abs(z) - expectedAbsStudentT(params.df))
         + params.gamma * z
         + params.beta * logVar;
       logVar = Math.max(-50, Math.min(50, logVar));

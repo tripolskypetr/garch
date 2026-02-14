@@ -275,6 +275,7 @@ describe('EGARCH negative beta', () => {
       unconditionalVariance: Math.exp(-0.5 / (1 - (-0.5))),
       annualizedVol: 0,
       leverageEffect: -0.05,
+      df: 30,
     };
     const variance = model.getVarianceSeries(params);
 
