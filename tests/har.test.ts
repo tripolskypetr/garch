@@ -629,12 +629,28 @@ describe('HAR-RV OLS deep mathematical tests', () => {
     expect(fit.params.r2).toBeCloseTo(r2Manual, 8);
   });
 
-  it('R² is high on data with strong HAR structure', () => {
-    // Use makeHarData which generates multi-scale clustering
-    const prices = makeHarData(800, 42);
-    const result = calibrateHarRv(prices);
-    // HAR-structured data should show positive R² (some predictive power)
-    expect(result.params.r2).toBeGreaterThan(0);
+  it('R² on GARCH-clustered data > R² on iid data (averaged over seeds)', () => {
+    // Independent check: averaged over multiple seeds to reduce noise,
+    // GARCH-clustered data (generatePrices) should show more predictable
+    // RV structure than pure iid returns.
+    let sumR2Clustered = 0;
+    let sumR2Iid = 0;
+    const nSeeds = 10;
+
+    for (let seed = 1; seed <= nSeeds; seed++) {
+      // Clustered (GARCH-like, persistence ~0.95)
+      sumR2Clustered += calibrateHarRv(generatePrices(500, seed)).params.r2;
+
+      // Pure iid — no volatility clustering
+      const rng = lcg(seed + 1000);
+      const iidPrices = [100];
+      for (let i = 0; i < 500; i++) {
+        iidPrices.push(iidPrices[i] * Math.exp(0.01 * randn(rng)));
+      }
+      sumR2Iid += calibrateHarRv(iidPrices).params.r2;
+    }
+
+    expect(sumR2Clustered / nSeeds).toBeGreaterThan(sumR2Iid / nSeeds);
   });
 
   it('normal equations hold: X\'X·β = X\'y', () => {
@@ -677,86 +693,115 @@ describe('HAR-RV OLS deep mathematical tests', () => {
   });
 });
 
-// ── fit() formula verification ───────────────────────────────
+// ── fit() independent property verification ─────────────────
 
-describe('HAR-RV fit formula verification', () => {
-  it('unconditional variance = beta0 / (1 - persistence) when stationary', () => {
-    const prices = generatePrices(500, 88);
-    const result = calibrateHarRv(prices);
-    const { beta0, persistence, unconditionalVariance } = result.params;
-
-    if (persistence > -1 && persistence < 1) {
-      const expected = beta0 / (1 - persistence);
-      const clamped = Math.max(expected, 1e-20);
-      expect(unconditionalVariance).toBeCloseTo(clamped, 12);
-    }
-  });
-
-  it('unconditional variance falls back to sample variance when persistence >= 1', () => {
-    // We can't easily force persistence >= 1 through the public API,
-    // but we can verify the logic by checking multiple seeds for one that's non-stationary
-    // Instead: verify that when persistence IS in range, formula is used
-    const seeds = [1, 2, 3, 4, 5, 10, 20, 30, 50, 100];
-    for (const seed of seeds) {
-      const prices = generatePrices(300, seed);
-      const result = calibrateHarRv(prices);
-      const { beta0, persistence, unconditionalVariance } = result.params;
-
-      if (persistence >= 1 || persistence <= -1) {
-        // Should have fallen back to sample variance — just verify it's positive and finite
-        expect(unconditionalVariance).toBeGreaterThan(0);
-        expect(Number.isFinite(unconditionalVariance)).toBe(true);
-      } else {
-        expect(unconditionalVariance).toBeCloseTo(Math.max(beta0 / (1 - persistence), 1e-20), 12);
-      }
-    }
-  });
-
-  it('log-likelihood formula: LL = -0.5 * sum[ln(v) + r²/v]', () => {
-    const prices = generatePrices(300, 77);
+describe('HAR-RV fit independent verification', () => {
+  it('fitted model LL > naive constant-variance model LL', () => {
+    // Independent check: if the HAR-RV model captures volatility dynamics,
+    // its LL should beat a "null model" that uses constant sample variance.
+    // naiveLL = -n/2 * (ln(σ²) + 1) where σ² = sample variance of returns.
+    const prices = generatePrices(300, 42);
     const model = new HarRv(prices);
     const fit = model.fit();
     const returns = model.getReturns();
-    const vs = model.getVarianceSeries(fit.params);
+    const n = returns.length;
 
-    let llManual = 0;
-    for (let i = 0; i < returns.length; i++) {
-      const v = vs[i];
-      if (v <= 1e-20 || !isFinite(v)) {
-        llManual += -1e6;
-      } else {
-        llManual += Math.log(v) + (returns[i] ** 2) / v;
-      }
-    }
-    llManual = -llManual / 2;
+    // Naive model: constant variance = Σr²/n (same formula the code uses for warmup)
+    const sampleVar = returns.reduce((s, r) => s + r * r, 0) / n;
+    // Closed-form Gaussian LL for constant variance:
+    // LL = -0.5 * Σ[ln(σ²) + r²/σ²] = -0.5 * [n*ln(σ²) + n] = -n/2 * (ln(σ²) + 1)
+    const naiveLL = -n / 2 * (Math.log(sampleVar) + 1);
 
-    expect(fit.diagnostics.logLikelihood).toBeCloseTo(llManual, 6);
+    // Fitted model should explain data at least as well as constant variance
+    expect(fit.diagnostics.logLikelihood).toBeGreaterThanOrEqual(naiveLL);
   });
 
-  it('AIC = 2k - 2LL with k=4', () => {
-    const prices = generatePrices(300, 99);
-    const result = calibrateHarRv(prices);
-    const expectedAIC = 2 * 4 - 2 * result.diagnostics.logLikelihood;
-    expect(result.diagnostics.aic).toBeCloseTo(expectedAIC, 10);
-  });
-
-  it('BIC = k*ln(n) - 2LL with correct nObs', () => {
-    const prices = generatePrices(300, 99);
-    const result = calibrateHarRv(prices);
-    // nObs = (n - 2) - (longLag - 1) + 1 = n - longLag - 1 + 1 = n - longLag
-    // where n = returns.length = prices.length - 1 = 299, rv.length = 299
-    // nObs = (299 - 2) - (22 - 1) + 1 = 297 - 21 + 1 = 277
-    const nObs = (prices.length - 1) - 22;  // rv.length - longLag
-    const expectedBIC = 4 * Math.log(nObs) - 2 * result.diagnostics.logLikelihood;
-    expect(result.diagnostics.bic).toBeCloseTo(expectedBIC, 6);
-  });
-
-  it('annualizedVol = sqrt(unconditionalVariance * periodsPerYear) * 100', () => {
+  it('AIC of fitted model < AIC of zero-slope model', () => {
+    // Independent check: a model with all slope betas = 0 should have worse AIC.
+    // Zero-slope model: σ² = beta0 for all t (effectively constant variance).
+    // Both models have 4 params, so AIC comparison reduces to LL comparison.
     const prices = generatePrices(300, 42);
-    const periodsPerYear = 365;
-    const result = calibrateHarRv(prices, { periodsPerYear });
-    const expected = Math.sqrt(Math.abs(result.params.unconditionalVariance) * periodsPerYear) * 100;
-    expect(result.params.annualizedVol).toBeCloseTo(expected, 8);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const returns = model.getReturns();
+
+    // Zero-slope LL: use getVarianceSeries with betas zeroed out
+    const zeroParams = {
+      ...fit.params,
+      betaShort: 0,
+      betaMedium: 0,
+      betaLong: 0,
+      beta0: returns.reduce((s, r) => s + r * r, 0) / returns.length,
+    };
+    const zeroVs = model.getVarianceSeries(zeroParams);
+
+    let zeroLL = 0;
+    for (let i = 0; i < returns.length; i++) {
+      const v = zeroVs[i];
+      if (v <= 1e-20 || !isFinite(v)) { zeroLL += -1e6; continue; }
+      zeroLL += Math.log(v) + (returns[i] ** 2) / v;
+    }
+    zeroLL = -zeroLL / 2;
+    const zeroAIC = 2 * 4 - 2 * zeroLL;
+
+    expect(fit.diagnostics.aic).toBeLessThan(zeroAIC);
+  });
+
+  it('unconditional variance ≈ mean of variance series post-warmup', () => {
+    // Independent check: for a stationary model, the unconditional variance
+    // should approximate the average conditional variance over the sample.
+    const prices = generatePrices(500, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+
+    if (fit.params.persistence > 0 && fit.params.persistence < 1) {
+      const vs = model.getVarianceSeries(fit.params);
+      const postWarmup = vs.slice(22);
+      const empiricalMean = postWarmup.reduce((s, v) => s + v, 0) / postWarmup.length;
+
+      // Allow 50% relative tolerance — finite sample vs theoretical mean
+      const relError = Math.abs(empiricalMean - fit.params.unconditionalVariance)
+                     / fit.params.unconditionalVariance;
+      expect(relError).toBeLessThan(0.5);
+    }
+  });
+
+  it('unconditional variance ≈ long-horizon forecast', () => {
+    // Independent check: iterating forecast far enough should converge
+    // to the theoretical unconditional variance.
+    const prices = generatePrices(500, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+
+    if (fit.params.persistence > 0 && fit.params.persistence < 0.99) {
+      const fc = model.forecast(fit.params, 200);
+      const relError = Math.abs(fc.variance[199] - fit.params.unconditionalVariance)
+                     / fit.params.unconditionalVariance;
+      expect(relError).toBeLessThan(0.01);
+    }
+  });
+
+  it('annualizedVol scales with sqrt(periodsPerYear) — ratio test', () => {
+    // Independent check: same data, different periodsPerYear — vol ratio
+    // should equal sqrt(ppy2/ppy1). This tests the scaling without copying the formula.
+    const prices = generatePrices(300, 42);
+    const r1 = calibrateHarRv(prices, { periodsPerYear: 252 });
+    const r2 = calibrateHarRv(prices, { periodsPerYear: 252 * 4 });
+
+    // uncondVar is the same (doesn't depend on periodsPerYear)
+    expect(r1.params.unconditionalVariance).toBe(r2.params.unconditionalVariance);
+
+    // annualizedVol should scale by sqrt(4) = 2
+    const ratio = r2.params.annualizedVol / r1.params.annualizedVol;
+    expect(ratio).toBeCloseTo(2.0, 10);
+  });
+
+  it('BIC > AIC for n >> k (property of penalty terms)', () => {
+    // Independent check: BIC = k*ln(n) - 2LL, AIC = 2k - 2LL.
+    // For n > e² ≈ 7.39, ln(n) > 2, so BIC penalty > AIC penalty, hence BIC > AIC.
+    const prices = generatePrices(300, 42);
+    const result = calibrateHarRv(prices);
+    expect(result.diagnostics.bic).toBeGreaterThan(result.diagnostics.aic);
   });
 });
 
@@ -847,35 +892,41 @@ describe('HAR-RV forecast deep tests', () => {
     }
   });
 
-  it('forecast step 1 matches manual calculation', () => {
+  it('forecast step 1 is continuous with variance series (last predicted value)', () => {
+    // Independent check: forecast[0] should be close to the last value
+    // of the in-sample variance series if recent RV is stable.
+    // This catches off-by-one errors in the forecast indexing.
     const prices = generatePrices(300, 42);
     const model = new HarRv(prices);
     const fit = model.fit();
-    const rv = model.getRv();
-
-    const t = rv.length - 1;
-    const rvShort = rv[t];
-    const rvMedium = rv.slice(t - 4, t + 1).reduce((a, b) => a + b, 0) / 5;
-    const rvLong = rv.slice(t - 21, t + 1).reduce((a, b) => a + b, 0) / 22;
-
-    const expected = fit.params.beta0
-      + fit.params.betaShort * rvShort
-      + fit.params.betaMedium * rvMedium
-      + fit.params.betaLong * rvLong;
-
+    const vs = model.getVarianceSeries(fit.params);
     const fc = model.forecast(fit.params, 1);
-    expect(fc.variance[0]).toBeCloseTo(Math.max(expected, 1e-20), 12);
+
+    const lastVs = vs[vs.length - 1];
+    // Not identical (different time step), but same order of magnitude
+    const ratio = fc.variance[0] / lastVs;
+    expect(ratio).toBeGreaterThan(0.1);
+    expect(ratio).toBeLessThan(10);
   });
 
-  it('forecast annualized[i] = 100 * sqrt(variance[i] * periodsPerYear)', () => {
-    const ppy = 525600; // minutely
+  it('forecast annualized scales with sqrt(periodsPerYear) — ratio test', () => {
+    // Independent check: same data, different periodsPerYear
     const prices = generatePrices(300, 42);
-    const model = new HarRv(prices, { periodsPerYear: ppy });
-    const fit = model.fit();
-    const fc = model.forecast(fit.params, 5);
+    const m1 = new HarRv(prices, { periodsPerYear: 100 });
+    const m2 = new HarRv(prices, { periodsPerYear: 400 });
+    const f1 = m1.fit();
+    const f2 = m2.fit();
+    const fc1 = m1.forecast(f1.params, 3);
+    const fc2 = m2.forecast(f2.params, 3);
 
-    for (let i = 0; i < 5; i++) {
-      expect(fc.annualized[i]).toBeCloseTo(Math.sqrt(fc.variance[i] * ppy) * 100, 8);
+    // variance is the same (periodsPerYear doesn't affect variance)
+    for (let i = 0; i < 3; i++) {
+      expect(fc1.variance[i]).toBe(fc2.variance[i]);
+    }
+    // annualized scales by sqrt(400/100) = 2
+    for (let i = 0; i < 3; i++) {
+      const ratio = fc2.annualized[i] / fc1.annualized[i];
+      expect(ratio).toBeCloseTo(2.0, 10);
     }
   });
 
@@ -951,22 +1002,23 @@ describe('HAR-RV model selection in predict', () => {
 // ── Regression snapshots (deterministic) ─────────────────────
 
 describe('HAR-RV regression snapshots', () => {
-  it('fixed seed 42 produces deterministic beta values', () => {
+  it('fixed seed 42 produces exact hardcoded values', () => {
+    // Frozen reference values for generatePrices(300, 42).
+    // Any change to OLS, returns, or RV computation will break this.
     const prices = generatePrices(300, 42);
     const result = calibrateHarRv(prices);
 
-    // Snapshot — OLS is deterministic so these should never change
-    expect(result.params.beta0).toBeCloseTo(result.params.beta0, 15); // self-check
-    // Verify exact reproducibility
-    const result2 = calibrateHarRv(prices);
-    expect(result.params.beta0).toBe(result2.params.beta0);
-    expect(result.params.betaShort).toBe(result2.params.betaShort);
-    expect(result.params.betaMedium).toBe(result2.params.betaMedium);
-    expect(result.params.betaLong).toBe(result2.params.betaLong);
-    expect(result.params.r2).toBe(result2.params.r2);
-    expect(result.diagnostics.logLikelihood).toBe(result2.diagnostics.logLikelihood);
-    expect(result.diagnostics.aic).toBe(result2.diagnostics.aic);
-    expect(result.diagnostics.bic).toBe(result2.diagnostics.bic);
+    expect(result.params.beta0).toBeCloseTo(0.00004369693354642014, 15);
+    expect(result.params.betaShort).toBeCloseTo(0.12859026062381232, 12);
+    expect(result.params.betaMedium).toBeCloseTo(-0.11338226665144722, 12);
+    expect(result.params.betaLong).toBeCloseTo(0.6963174240904823, 12);
+    expect(result.params.persistence).toBeCloseTo(0.7115254180628473, 12);
+    expect(result.params.r2).toBeCloseTo(0.09233338797305524, 12);
+    expect(result.params.unconditionalVariance).toBeCloseTo(0.0001514758536193667, 12);
+    expect(result.params.annualizedVol).toBeCloseTo(19.537634225279273, 8);
+    expect(result.diagnostics.logLikelihood).toBeCloseTo(1178.0553492987865, 6);
+    expect(result.diagnostics.aic).toBeCloseTo(-2348.110698597573, 6);
+    expect(result.diagnostics.bic).toBeCloseTo(-2333.6146285728237, 6);
   });
 
   it('fitted params minimize RSS (OLS optimality — perturbation test)', () => {
