@@ -954,10 +954,9 @@ describe('NoVaS regression snapshot', () => {
     expect(result.params.persistence).toBeCloseTo(0.00010414538125970343, 10);
     expect(result.params.dSquared).toBeCloseTo(0.0000069505672495141025, 6);
     expect(result.diagnostics.converged).toBe(true);
-    expect(result.params.df).toBeGreaterThan(2);
-    // LL/AIC changed from Gaussian to Student-t — just verify finite
-    expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
-    expect(Number.isFinite(result.diagnostics.aic)).toBe(true);
+    expect(result.params.df).toBeCloseTo(2.3, 0);
+    expect(result.diagnostics.logLikelihood).toBeCloseTo(-1516.6869089028805, 0);
+    expect(result.diagnostics.aic).toBeCloseTo(3057.373817805761, 0);
   });
 });
 

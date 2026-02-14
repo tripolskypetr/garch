@@ -1013,11 +1013,10 @@ describe('HAR-RV regression snapshots', () => {
     expect(result.params.r2).toBeCloseTo(0.09233338797305524, 12);
     expect(result.params.unconditionalVariance).toBeCloseTo(0.0001514758536193667, 12);
     expect(result.params.annualizedVol).toBeCloseTo(19.537634225279273, 8);
-    // LL/AIC/BIC changed after migration to Student-t log-likelihood;
-    // use structural checks instead of exact values.
-    expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
-    expect(result.diagnostics.logLikelihood).toBeGreaterThan(0);
-    expect(result.diagnostics.bic).toBeGreaterThan(result.diagnostics.aic);
+    expect(result.params.df).toBeCloseTo(51.0, 0);
+    expect(result.diagnostics.logLikelihood).toBeCloseTo(903.1826595726905, 4);
+    expect(result.diagnostics.aic).toBeCloseTo(-1796.365319145381, 4);
+    expect(result.diagnostics.bic).toBeCloseTo(-1778.2452316144443, 4);
   });
 
   it('fitted params minimize RSS (OLS optimality — perturbation test)', () => {
@@ -1137,20 +1136,17 @@ describe('HAR-RV predict.ts code paths', () => {
     expect(Number.isFinite(result.sigma)).toBe(true);
   });
 
-  it.skip('HAR-RV wins model selection for at least one seed', () => {
-    // Skipped: after migration to Student-t log-likelihood, HAR-RV may not
-    // win AIC comparison against GARCH/EGARCH for synthetic data generated
-    // by makeCandles (which has GARCH-like volatility structure).
-    let harRvWon = false;
-    for (let seed = 1; seed <= 500; seed++) {
-      const candles = makeCandles(500, seed);
-      const result = predict(candles, '4h');
-      if (result.modelType === 'har-rv') {
-        harRvWon = true;
-        break;
-      }
-    }
-    expect(harRvWon).toBe(true);
+  it('HAR-RV is a valid candidate in model selection', () => {
+    // HAR-RV won't beat GARCH on GARCH-like makeCandles data (expected),
+    // but verify it's properly evaluated: its AIC must be finite.
+    const candles = makeCandles(500, 42);
+    const model = new HarRv(candles, { periodsPerYear: 252 * 6 });
+    const fit = model.fit();
+
+    expect(fit.diagnostics.converged).toBe(true);
+    expect(Number.isFinite(fit.diagnostics.aic)).toBe(true);
+    expect(fit.params.df).toBeGreaterThan(2);
+    expect(fit.params.r2).toBeGreaterThanOrEqual(0);
   });
 
   it('GARCH/EGARCH wins model selection for at least one seed', () => {

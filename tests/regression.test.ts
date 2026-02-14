@@ -61,26 +61,26 @@ describe('Regression snapshots', () => {
   it('GARCH params on makePrices(100)', () => {
     const r = calibrateGarch(prices);
 
-    // Student-t optimization may find different params than Gaussian
-    // Just verify structural properties + finite values
-    expect(r.params.omega).toBeGreaterThan(0);
-    expect(r.params.alpha).toBeGreaterThanOrEqual(0);
-    expect(r.params.beta).toBeGreaterThanOrEqual(0);
+    // Student-t MLE exact snapshot values
+    expect(r.params.omega).toBeCloseTo(1.0885186560315161e-8, 12);
+    expect(r.params.alpha).toBeCloseTo(1.1992837185889667e-10, 14);
+    expect(r.params.beta).toBeCloseTo(0.9998999998095188, 6);
+    expect(r.params.df).toBeCloseTo(33.77, 0);
     expect(r.params.persistence).toBeLessThan(1);
-    expect(r.params.df).toBeGreaterThan(2);
-    expect(Number.isFinite(r.diagnostics.logLikelihood)).toBe(true);
+    expect(r.diagnostics.logLikelihood).toBeCloseTo(309.2177927685958, 2);
     expect(r.diagnostics.converged).toBe(true);
   });
 
   it('EGARCH params on makePrices(100)', () => {
     const r = calibrateEgarch(prices);
 
-    expect(Number.isFinite(r.params.omega)).toBe(true);
-    expect(Number.isFinite(r.params.alpha)).toBe(true);
-    expect(Number.isFinite(r.params.gamma)).toBe(true);
-    expect(Math.abs(r.params.beta)).toBeLessThan(1);
-    expect(r.params.df).toBeGreaterThan(2);
-    expect(Number.isFinite(r.diagnostics.logLikelihood)).toBe(true);
+    // Student-t MLE exact snapshot values
+    expect(r.params.omega).toBeCloseTo(-17.154545344556958, 2);
+    expect(r.params.alpha).toBeCloseTo(-0.186113131218345, 4);
+    expect(r.params.gamma).toBeCloseTo(0.21493459570073092, 4);
+    expect(r.params.beta).toBeCloseTo(-0.8745672428204935, 4);
+    expect(r.params.df).toBeCloseTo(100, 0);
+    expect(r.diagnostics.logLikelihood).toBeCloseTo(313.4950425741637, 2);
     expect(r.diagnostics.converged).toBe(true);
   });
 });
@@ -111,35 +111,46 @@ describe('Cross-model consistency', () => {
   it('forecast annualized vol converges to params.annualizedVol', () => {
     const model = new Garch(makePrices(200));
     const result = model.fit();
-    const fc = model.forecast(result.params, 500);
+    const { alpha, beta } = result.params;
+    const persistence = alpha + beta;
 
-    const relErr = Math.abs(fc.annualized[499] - result.params.annualizedVol)
+    const steps = Math.max(500, Math.ceil(Math.log(0.01) / Math.log(persistence)));
+    const fc = model.forecast(result.params, steps);
+
+    const relErr = Math.abs(fc.annualized[steps - 1] - result.params.annualizedVol)
       / result.params.annualizedVol;
 
-    expect(relErr).toBeLessThan(0.5);
+    expect(relErr).toBeLessThan(0.01);
   });
 
   it('EGARCH forecast annualized vol converges to params.annualizedVol', () => {
     const prices = generateEgarchData(500, -0.1, 0.1, -0.05, 0.9, 42);
     const model = new Egarch(prices);
     const result = model.fit();
-    const fc = model.forecast(result.params, 500);
+    const persistence = Math.abs(result.params.beta);
 
-    const relErr = Math.abs(fc.annualized[499] - result.params.annualizedVol)
+    const steps = Math.max(500, Math.ceil(Math.log(0.01) / Math.log(persistence)));
+    const fc = model.forecast(result.params, steps);
+
+    const relErr = Math.abs(fc.annualized[steps - 1] - result.params.annualizedVol)
       / result.params.annualizedVol;
 
-    expect(relErr).toBeLessThan(0.5);
+    expect(relErr).toBeLessThan(0.01);
   });
 
   it('GJR-GARCH forecast annualized vol converges to params.annualizedVol', () => {
     const model = new GjrGarch(makePrices(200));
     const result = model.fit();
-    const fc = model.forecast(result.params, 500);
+    const { alpha, gamma, beta } = result.params;
+    const persistence = alpha + gamma / 2 + beta;
 
-    const relErr = Math.abs(fc.annualized[499] - result.params.annualizedVol)
+    const steps = Math.max(500, Math.ceil(Math.log(0.01) / Math.log(persistence)));
+    const fc = model.forecast(result.params, steps);
+
+    const relErr = Math.abs(fc.annualized[steps - 1] - result.params.annualizedVol)
       / result.params.annualizedVol;
 
-    expect(relErr).toBeLessThan(0.5);
+    expect(relErr).toBeLessThan(0.01);
   });
 });
 
@@ -193,12 +204,18 @@ describe('Property-based invariants', () => {
       const prices = makePrices(100, seed);
       const model = new Garch(prices);
       const result = model.fit();
-      const fc = model.forecast(result.params, 100);
       const { omega, alpha, beta } = result.params;
-      const unconditional = omega / (1 - alpha - beta);
+      const persistence = alpha + beta;
 
-      const relErr = Math.abs(fc.variance[99] - unconditional) / unconditional;
-      expect(relErr).toBeLessThan(1.0);
+      // Skip seeds where persistence is too close to 1 (unconditional variance unstable)
+      if (persistence > 0.999) continue;
+
+      const unconditional = omega / (1 - persistence);
+      const steps = Math.max(500, Math.ceil(Math.log(0.01) / Math.log(persistence)));
+      const fc = model.forecast(result.params, steps);
+
+      const relErr = Math.abs(fc.variance[steps - 1] - unconditional) / unconditional;
+      expect(relErr).toBeLessThan(0.1);
     }
   });
 });

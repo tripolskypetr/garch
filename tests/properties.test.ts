@@ -197,7 +197,7 @@ describe('Forecast properties', () => {
     const fc = model.forecast(result.params, steps);
     const relErr = Math.abs(fc.variance[steps - 1] - unconditional) / unconditional;
 
-    expect(relErr).toBeLessThan(0.05);
+    expect(relErr).toBeLessThan(0.01);
   });
 
   it('EGARCH long horizon → exp(ω/(1−β))', () => {
@@ -206,11 +206,13 @@ describe('Forecast properties', () => {
     const result = model.fit();
     const { omega, beta } = result.params;
     const unconditional = Math.exp(omega / (1 - beta));
+    const persistence = Math.abs(beta);
 
-    const fc = model.forecast(result.params, 500);
-    const relErr = Math.abs(fc.variance[499] - unconditional) / unconditional;
+    const steps = Math.max(500, Math.ceil(Math.log(0.01) / Math.log(persistence)));
+    const fc = model.forecast(result.params, steps);
+    const relErr = Math.abs(fc.variance[steps - 1] - unconditional) / unconditional;
 
-    expect(relErr).toBeLessThan(0.05);
+    expect(relErr).toBeLessThan(0.01);
   });
 
   it('GJR-GARCH long horizon → ω/(1−α−γ/2−β)', () => {
@@ -225,7 +227,7 @@ describe('Forecast properties', () => {
     const fc = model.forecast(result.params, steps);
     const relErr = Math.abs(fc.variance[steps - 1] - unconditional) / unconditional;
 
-    expect(relErr).toBeLessThan(0.05);
+    expect(relErr).toBeLessThan(0.01);
   });
 
   it('GARCH forecast is monotonic toward unconditional', () => {

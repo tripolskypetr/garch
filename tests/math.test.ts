@@ -186,10 +186,14 @@ describe('GARCH forecast formulas', () => {
   });
 
   it('converges to unconditional variance ω/(1−α−β)', () => {
-    const unconditional = omega / (1 - alpha - beta);
-    const last = fc.variance[49];
+    const persistence = alpha + beta;
+    const unconditional = omega / (1 - persistence);
+    // Compute how many steps to converge within 1% of unconditional
+    const steps = Math.max(50, Math.ceil(Math.log(0.01) / Math.log(persistence)));
+    const longFc = model.forecast(result.params, steps);
+    const last = longFc.variance[steps - 1];
     const relErr = Math.abs(last - unconditional) / unconditional;
-    expect(relErr).toBeLessThan(1.0);
+    expect(relErr).toBeLessThan(0.01);
   });
 });
 

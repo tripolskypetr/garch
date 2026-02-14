@@ -370,18 +370,21 @@ describe('Forecast with large steps', () => {
   it('GARCH forecast 10000 steps: all finite, converges', () => {
     const model = new Garch(makePrices(100));
     const result = model.fit();
-    const fc = model.forecast(result.params, 10000);
+    const { omega, alpha, beta } = result.params;
+    const persistence = alpha + beta;
 
-    expect(fc.variance).toHaveLength(10000);
+    // Use enough steps for convergence to within 1e-6
+    const steps = Math.max(10000, Math.ceil(Math.log(1e-6) / Math.log(persistence)));
+    const fc = model.forecast(result.params, steps);
+
+    expect(fc.variance).toHaveLength(steps);
     expect(fc.variance.every(v => v > 0 && Number.isFinite(v))).toBe(true);
     expect(fc.volatility.every(v => v > 0 && Number.isFinite(v))).toBe(true);
     expect(fc.annualized.every(v => v > 0 && Number.isFinite(v))).toBe(true);
 
-    // Should be at unconditional variance by step 10000
-    const { omega, alpha, beta } = result.params;
-    const unconditional = omega / (1 - alpha - beta);
-    const relErr = Math.abs(fc.variance[9999] - unconditional) / unconditional;
-    expect(relErr).toBeLessThan(0.5);
+    const unconditional = omega / (1 - persistence);
+    const relErr = Math.abs(fc.variance[steps - 1] - unconditional) / unconditional;
+    expect(relErr).toBeLessThan(1e-6);
   });
 
   it('EGARCH forecast 10000 steps: all finite', () => {
