@@ -442,7 +442,7 @@ where RV_t is Parkinson per-candle realized variance and sigma_t^2 is the model'
 
 ## Tests
 
-**911 tests** across **22 test files**. All passing.
+**919 tests** across **22 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
@@ -460,7 +460,7 @@ where RV_t is Parkinson per-candle realized variance and sigma_t^2 is the model'
 | Stability | `stability.test.ts` | 12 | Long-term forecast behavior, variance convergence, GJR-GARCH near-constant and outlier handling |
 | Robustness | `robustness.test.ts` | 53 | Extreme moves, stress scenarios |
 | Realized models | `realized-garch.test.ts` | 83 | Candle[] vs number[] for GARCH/EGARCH/GJR-GARCH/NoVaS, Parkinson RV edge cases, flat candles, extreme H/L, scale invariance, all-identical OHLC, minimum-length boundary, D² comparison, predict fallback, **ground-truth volatility recovery** (see below) |
-| Edge cases | `edge-cases.test.ts`, `coverage-gaps*.test.ts` | 157 | Insufficient data, near-unit-root, zero returns, constant prices, negative prices, overflow/underflow, trending data, 10K+ data points, GJR-GARCH immutability and instance isolation |
+| Edge cases | `edge-cases.test.ts`, `coverage-gaps*.test.ts` | 165 | Insufficient data, near-unit-root, zero returns, constant prices, negative prices, overflow/underflow, trending data, 10K+ data points, GJR-GARCH immutability and instance isolation, EGARCH df≤2 fallback, logGamma/expectedAbsStudentT/qlike edge cases |
 | Miscellaneous | `misc.test.ts` | 13 | Integration scenarios, different intervals, immutability |
 
 ### Ground-Truth Volatility Test

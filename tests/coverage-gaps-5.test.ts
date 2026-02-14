@@ -3,6 +3,8 @@ import {
   Garch,
   Egarch,
   GjrGarch,
+  NoVaS,
+  HarRv,
   calibrateGarch,
   calibrateEgarch,
   calibrateGjrGarch,
@@ -10,6 +12,10 @@ import {
   calculateReturnsFromPrices,
   checkLeverageEffect,
   nelderMead,
+  logGamma,
+  expectedAbsStudentT,
+  qlike,
+  EXPECTED_ABS_NORMAL,
   type Candle,
 } from '../src/index.js';
 import { calculateAIC, calculateBIC } from '../src/utils.js';
@@ -214,3 +220,93 @@ describe('GJR-GARCH numParams = 5', () => {
     expect(bic).toBeCloseTo(5 * Math.log(n) - 2 * logLikelihood, 10);
   });
 });
+
+// ── 10. utils edge-case branches ─────────────────────────────
+
+describe('utils branch coverage', () => {
+  it('logGamma(0) returns Infinity', () => {
+    expect(logGamma(0)).toBe(Infinity);
+  });
+
+  it('logGamma(-1) returns Infinity', () => {
+    expect(logGamma(-1)).toBe(Infinity);
+  });
+
+  it('expectedAbsStudentT(df <= 2) falls back to EXPECTED_ABS_NORMAL', () => {
+    expect(expectedAbsStudentT(2)).toBe(EXPECTED_ABS_NORMAL);
+    expect(expectedAbsStudentT(1.5)).toBe(EXPECTED_ABS_NORMAL);
+  });
+
+  it('qlike skips zero/negative values', () => {
+    expect(qlike([0, 0], [1, 1])).toBe(Infinity);
+    expect(qlike([1, 1], [0, 0])).toBe(Infinity);
+    // Only valid pair at index 1: ratio=1 → 1-ln(1)-1=0
+    expect(qlike([0, 2], [0, 2])).toBeCloseTo(0, 10);
+  });
+
+  it('qlike returns Infinity for empty arrays', () => {
+    expect(qlike([], [])).toBe(Infinity);
+  });
+});
+
+// ── 11. EGARCH df <= 2 branch in getVarianceSeries/forecast ──
+
+describe('EGARCH df <= 2 branch', () => {
+  function egarchCandles(n: number): Candle[] {
+    const candles: Candle[] = [];
+    let price = 100;
+    let state = 42;
+    for (let i = 0; i < n; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      const r = ((state / 0x7fffffff) - 0.5) * 0.02;
+      const close = price * Math.exp(r);
+      const high = Math.max(price, close) * 1.001;
+      const low = Math.min(price, close) * 0.999;
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+    return candles;
+  }
+
+  it('getVarianceSeries with df=2 uses EXPECTED_ABS_NORMAL fallback', () => {
+    const model = new Egarch(egarchCandles(200));
+    const fit = model.fit();
+    const series = model.getVarianceSeries({ ...fit.params, df: 2 });
+    expect(series.length).toBeGreaterThan(0);
+    for (const v of series) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it('forecast with df=1.5 uses EXPECTED_ABS_NORMAL fallback', () => {
+    const model = new Egarch(egarchCandles(200));
+    const fit = model.fit();
+    const fc = model.forecast({ ...fit.params, df: 1.5 }, 3);
+    expect(fc.variance.length).toBe(3);
+    for (const v of fc.variance) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+});
+
+// ── 12. HAR-RV OLS tss=0 → r2=0 ─────────────────────────────
+
+describe('HAR-RV singular matrix branch', () => {
+  it('constant-close candles throw singular matrix error', () => {
+    // All close=100 → returns all zero → X'X singular → throws
+    const candles: Candle[] = [];
+    for (let i = 0; i < 100; i++) {
+      candles.push({ open: 100, high: 100.01, low: 99.99, close: 100, volume: 1000 });
+    }
+    const model = new HarRv(candles);
+    expect(() => model.fit()).toThrow('Singular matrix');
+  });
+});
+
+// NOTE: novas.ts:157 (persistence >= 1 fallback) and predict.ts:171-172 (fitNoVaS catch)
+// are defensive dead code — unreachable through normal API usage.
+// novas.ts:157: D² objective penalizes persistence >= 0.9999 with 1e10, so Nelder-Mead
+//               never produces persistence >= 1.
+// predict.ts:171-172: predict's assertMinCandles (≥150) exceeds NoVaS minimum (40).
