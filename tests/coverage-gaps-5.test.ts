@@ -155,62 +155,62 @@ describe('nelderMead input immutability', () => {
   });
 });
 
-// ── 7. GARCH uses numParams = 3 for AIC/BIC ────────────────
+// ── 7. GARCH uses numParams = 4 for AIC/BIC ────────────────
 
-describe('GARCH numParams = 3', () => {
-  it('AIC = 2·3 − 2·LL', () => {
+describe('GARCH numParams = 4', () => {
+  it('AIC = 2·4 − 2·LL', () => {
     const result = calibrateGarch(makePrices(200));
     const { logLikelihood, aic } = result.diagnostics;
 
-    expect(aic).toBeCloseTo(2 * 3 - 2 * logLikelihood, 10);
+    expect(aic).toBeCloseTo(2 * 4 - 2 * logLikelihood, 10);
   });
 
-  it('BIC = 3·ln(n) − 2·LL where n = number of returns', () => {
+  it('BIC = 4·ln(n) − 2·LL where n = number of returns', () => {
     const prices = makePrices(200);
     const result = calibrateGarch(prices);
     const n = prices.length - 1; // number of returns
     const { logLikelihood, bic } = result.diagnostics;
 
-    expect(bic).toBeCloseTo(3 * Math.log(n) - 2 * logLikelihood, 10);
+    expect(bic).toBeCloseTo(4 * Math.log(n) - 2 * logLikelihood, 10);
   });
 });
 
-// ── 8. EGARCH uses numParams = 4 for AIC/BIC ───────────────
+// ── 8. EGARCH uses numParams = 5 for AIC/BIC ───────────────
 
-describe('EGARCH numParams = 4', () => {
-  it('AIC = 2·4 − 2·LL', () => {
+describe('EGARCH numParams = 5', () => {
+  it('AIC = 2·5 − 2·LL', () => {
     const result = calibrateEgarch(makePrices(200));
     const { logLikelihood, aic } = result.diagnostics;
 
-    expect(aic).toBeCloseTo(2 * 4 - 2 * logLikelihood, 10);
+    expect(aic).toBeCloseTo(2 * 5 - 2 * logLikelihood, 10);
   });
 
-  it('BIC = 4·ln(n) − 2·LL where n = number of returns', () => {
+  it('BIC = 5·ln(n) − 2·LL where n = number of returns', () => {
     const prices = makePrices(200);
     const result = calibrateEgarch(prices);
     const n = prices.length - 1;
     const { logLikelihood, bic } = result.diagnostics;
 
-    expect(bic).toBeCloseTo(4 * Math.log(n) - 2 * logLikelihood, 10);
+    expect(bic).toBeCloseTo(5 * Math.log(n) - 2 * logLikelihood, 10);
   });
 });
 
-// ── 9. GJR-GARCH uses numParams = 4 for AIC/BIC ────────────
+// ── 9. GJR-GARCH uses numParams = 5 for AIC/BIC ────────────
 
-describe('GJR-GARCH numParams = 4', () => {
-  it('AIC = 2·4 − 2·LL', () => {
+describe('GJR-GARCH numParams = 5', () => {
+  it('AIC = 2·5 − 2·LL', () => {
     const result = calibrateGjrGarch(makePrices(200));
     const { logLikelihood, aic } = result.diagnostics;
 
-    expect(aic).toBeCloseTo(2 * 4 - 2 * logLikelihood, 10);
+    expect(aic).toBeCloseTo(2 * 5 - 2 * logLikelihood, 10);
   });
 
-  it('BIC = 4·ln(n) − 2·LL where n = number of returns', () => {
+  it('BIC = 5·ln(n) − 2·LL where n = number of returns', () => {
     const prices = makePrices(200);
     const result = calibrateGjrGarch(prices);
     const n = prices.length - 1;
     const { logLikelihood, bic } = result.diagnostics;
 
-    expect(bic).toBeCloseTo(4 * Math.log(n) - 2 * logLikelihood, 10);
+    expect(bic).toBeCloseTo(5 * Math.log(n) - 2 * logLikelihood, 10);
   });
 });

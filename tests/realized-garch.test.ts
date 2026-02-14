@@ -13,6 +13,7 @@ import {
   predictRange,
   backtest,
   EXPECTED_ABS_NORMAL,
+  expectedAbsStudentT,
   type Candle,
 } from '../src/index.js';
 
@@ -199,6 +200,7 @@ describe('EGARCH getVarianceSeries magnitude path with Candle[]', () => {
     const vs = model.getVarianceSeries(fit.params);
     const returns = model.getReturns();
     const rv = perCandleParkinson(candles, returns);
+    const eAbsZ = expectedAbsStudentT(fit.params.df);
 
     // Reconstruct manually
     const manual: number[] = [];
@@ -211,7 +213,7 @@ describe('EGARCH getVarianceSeries magnitude path with Candle[]', () => {
       const magnitude = Math.sqrt(rv[i - 1] / manual[i - 1]);
 
       logVariance = omega
-        + alpha * (magnitude - EXPECTED_ABS_NORMAL)
+        + alpha * (magnitude - eAbsZ)
         + gamma * z
         + beta * logVariance;
 
@@ -499,7 +501,8 @@ describe('EGARCH forecast multi-step with Candle[]', () => {
     const candles = makeCandles(200, 42);
     const model = new Egarch(candles);
     const fit = model.fit();
-    const { omega, alpha, gamma, beta } = fit.params;
+    const { omega, alpha, gamma, beta, df } = fit.params;
+    const eAbsZ = expectedAbsStudentT(df);
 
     const vs = model.getVarianceSeries(fit.params);
     const returns = model.getReturns();
@@ -513,7 +516,7 @@ describe('EGARCH forecast multi-step with Candle[]', () => {
     const magnitude = Math.sqrt(lastRV / lastVar);
 
     const logVar1 = omega
-      + alpha * (magnitude - EXPECTED_ABS_NORMAL)
+      + alpha * (magnitude - eAbsZ)
       + gamma * z
       + beta * Math.log(lastVar);
 

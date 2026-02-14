@@ -8,6 +8,7 @@ import {
   perCandleParkinson,
   calculateAIC,
   calculateBIC,
+  logGamma,
 } from './utils.js';
 
 export interface GarchOptions {
@@ -65,48 +66,53 @@ export class Garch {
 
     const rv = this.rv;
 
-    // Negative log-likelihood function
+    // Student-t negative log-likelihood function
     function negLogLikelihood(params: number[]): number {
-      const [omega, alpha, beta] = params;
+      const [omega, alpha, beta, df] = params;
 
       // Constraints
       if (omega <= 1e-12) return 1e10;
       if (alpha < 0 || beta < 0) return 1e10;
       if (alpha + beta >= 0.9999) return 1e10;
+      if (df <= 2.01 || df > 100) return 1e10;
+
+      const halfDfPlus1 = (df + 1) / 2;
+      const dfMinus2 = df - 2;
+      const constant = n * (logGamma(halfDfPlus1) - logGamma(df / 2) - 0.5 * Math.log(Math.PI * dfMinus2));
 
       let variance = initVar;
       let ll = 0;
 
       for (let i = 0; i < n; i++) {
         if (i > 0) {
-          // Candle[] → Parkinson RV (realized), number[] → r² (classical)
           const innovation = rv ? rv[i - 1] : returns[i - 1] ** 2;
           variance = omega + alpha * innovation + beta * variance;
         }
 
         if (variance <= 1e-12) return 1e10;
 
-        // Gaussian log-likelihood (dropping constant)
-        ll += Math.log(variance) + (returns[i] ** 2) / variance;
+        // Student-t log-likelihood
+        ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));
       }
 
-      return ll / 2;
+      return -(ll + constant);
     }
 
     // Initial guesses
     const omega0 = initVar * 0.05;
     const alpha0 = 0.1;
     const beta0 = 0.85;
+    const df0 = 5;
 
-    const result = nelderMead(negLogLikelihood, [omega0, alpha0, beta0], { maxIter, tol });
+    const result = nelderMead(negLogLikelihood, [omega0, alpha0, beta0, df0], { maxIter, tol });
 
-    const [omega, alpha, beta] = result.x;
+    const [omega, alpha, beta, df] = result.x;
     const persistence = alpha + beta;
     const unconditionalVariance = omega / (1 - persistence);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
     const logLikelihood = -result.fx;
-    const numParams = 3;
+    const numParams = 4;
 
     return {
       params: {
@@ -116,6 +122,7 @@ export class Garch {
         persistence,
         unconditionalVariance,
         annualizedVol,
+        df,
       },
       diagnostics: {
         logLikelihood,

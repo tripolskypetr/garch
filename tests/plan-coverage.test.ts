@@ -14,6 +14,7 @@ import {
   predictRange,
   backtest,
   EXPECTED_ABS_NORMAL,
+  expectedAbsStudentT,
 } from '../src/index.js';
 import { chi2Survival } from '../src/utils.js';
 import type { Candle } from '../src/index.js';
@@ -635,8 +636,9 @@ describe('EGARCH forecast manual verification', () => {
     const lastRV = coeff * hl * hl;
     const magnitude = Math.sqrt(lastRV / lastVar);
 
+    const eAbsZ = expectedAbsStudentT(fit.params.df);
     const expectedLogVar = omega
-      + alpha * (magnitude - EXPECTED_ABS_NORMAL)
+      + alpha * (magnitude - eAbsZ)
       + gamma * z
       + beta * Math.log(lastVar);
     const expectedVar = Math.exp(expectedLogVar);

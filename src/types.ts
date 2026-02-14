@@ -14,6 +14,7 @@ export interface GarchParams {
   persistence: number;
   unconditionalVariance: number;
   annualizedVol: number;
+  df: number;
 }
 
 export interface EgarchParams {
@@ -25,6 +26,7 @@ export interface EgarchParams {
   unconditionalVariance: number;
   annualizedVol: number;
   leverageEffect: number;
+  df: number;
 }
 
 export interface GjrGarchParams {
@@ -36,6 +38,7 @@ export interface GjrGarchParams {
   unconditionalVariance: number;
   annualizedVol: number;
   leverageEffect: number;
+  df: number;
 }
 
 export interface CalibrationResult<T> {
@@ -71,6 +74,7 @@ export interface HarRvParams {
   unconditionalVariance: number;
   annualizedVol: number;
   r2: number;
+  df: number;
 }
 
 export interface NoVaSParams {
@@ -80,6 +84,7 @@ export interface NoVaSParams {
   unconditionalVariance: number;
   annualizedVol: number;
   dSquared: number;
+  df: number;
 }
 
 export interface OptimizerResult {

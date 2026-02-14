@@ -9,6 +9,8 @@ import {
   calculateAIC,
   calculateBIC,
   EXPECTED_ABS_NORMAL,
+  logGamma,
+  expectedAbsStudentT,
 } from './utils.js';
 
 export interface EgarchOptions {
@@ -28,7 +30,7 @@ export interface EgarchOptions {
  * - α (alpha): magnitude effect
  * - γ (gamma): leverage effect (typically negative)
  * - β (beta): persistence
- * - E[|z|] = √(2/π) for standard normal
+ * - E[|z|] = expectedAbsStudentT(df) for Student-t(df)
  */
 export class Egarch {
   private returns: number[];
@@ -68,10 +70,16 @@ export class Egarch {
     const rv = this.rv;
 
     function negLogLikelihood(params: number[]): number {
-      const [omega, alpha, gamma, beta] = params;
+      const [omega, alpha, gamma, beta, df] = params;
 
       // EGARCH allows negative gamma, but beta should ensure stationarity
       if (Math.abs(beta) >= 0.9999) return 1e10;
+      if (df <= 2.01 || df > 100) return 1e10;
+
+      const eAbsZ = expectedAbsStudentT(df);
+      const halfDfPlus1 = (df + 1) / 2;
+      const dfMinus2 = df - 2;
+      const constant = n * (logGamma(halfDfPlus1) - logGamma(df / 2) - 0.5 * Math.log(Math.PI * dfMinus2));
 
       let logVariance = initLogVar;
       let variance = Math.exp(logVariance);
@@ -88,7 +96,7 @@ export class Egarch {
             : Math.abs(z);
 
           logVariance = omega
-            + alpha * (magnitude - EXPECTED_ABS_NORMAL)
+            + alpha * (magnitude - eAbsZ)
             + gamma * z
             + beta * logVariance;
 
@@ -99,10 +107,11 @@ export class Egarch {
 
         if (variance <= 1e-12 || !isFinite(variance)) return 1e10;
 
-        ll += Math.log(variance) + (returns[i] ** 2) / variance;
+        // Student-t log-likelihood
+        ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));
       }
 
-      return ll / 2;
+      return -(ll + constant);
     }
 
     // Initial guesses
@@ -111,14 +120,15 @@ export class Egarch {
     const alpha0 = 0.1;
     const gamma0 = -0.05; // Negative for typical leverage effect
     const beta0 = 0.95;
+    const df0 = 5;
 
     const result = nelderMead(
       negLogLikelihood,
-      [omega0, alpha0, gamma0, beta0],
+      [omega0, alpha0, gamma0, beta0, df0],
       { maxIter, tol }
     );
 
-    const [omega, alpha, gamma, beta] = result.x;
+    const [omega, alpha, gamma, beta, df] = result.x;
 
     // For EGARCH, unconditional variance: E[ln(σ²)] = ω/(1-β)
     // So E[σ²] ≈ exp(ω/(1-β)) when α and γ effects average out
@@ -127,7 +137,7 @@ export class Egarch {
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
     const logLikelihood = -result.fx;
-    const numParams = 4;
+    const numParams = 5;
 
     return {
       params: {
@@ -139,6 +149,7 @@ export class Egarch {
         unconditionalVariance,
         annualizedVol,
         leverageEffect: gamma,
+        df,
       },
       diagnostics: {
         logLikelihood,
@@ -154,7 +165,8 @@ export class Egarch {
    * Calculate conditional variance series given parameters
    */
   getVarianceSeries(params: EgarchParams): number[] {
-    const { omega, alpha, gamma, beta } = params;
+    const { omega, alpha, gamma, beta, df } = params;
+    const eAbsZ = df > 2 ? expectedAbsStudentT(df) : EXPECTED_ABS_NORMAL;
     const variance: number[] = [];
     let logVariance = Math.log(this.initialVariance);
 
@@ -169,7 +181,7 @@ export class Egarch {
           : Math.abs(z);
 
         logVariance = omega
-          + alpha * (magnitude - EXPECTED_ABS_NORMAL)
+          + alpha * (magnitude - eAbsZ)
           + gamma * z
           + beta * logVariance;
 
@@ -189,7 +201,8 @@ export class Egarch {
    * expected values of future shocks.
    */
   forecast(params: EgarchParams, steps: number = 1): VolatilityForecast {
-    const { omega, alpha, gamma, beta } = params;
+    const { omega, alpha, gamma, beta, df } = params;
+    const eAbsZ = df > 2 ? expectedAbsStudentT(df) : EXPECTED_ABS_NORMAL;
     const variance: number[] = [];
 
     const varianceSeries = this.getVarianceSeries(params);
@@ -203,13 +216,13 @@ export class Egarch {
       ? Math.sqrt(this.rv[this.rv.length - 1] / lastVariance)
       : Math.abs(z);
     let logVariance = omega
-      + alpha * (magnitude - EXPECTED_ABS_NORMAL)
+      + alpha * (magnitude - eAbsZ)
       + gamma * z
       + beta * Math.log(lastVariance);
 
     variance.push(Math.exp(logVariance));
 
-    // Multi-step: assume E[z] = 0, E[|z|] = √(2/π)
+    // Multi-step: assume E[z] = 0, E[|z|] = eAbsZ
     // So the α and γ terms contribute 0 on average
     for (let h = 1; h < steps; h++) {
       logVariance = omega + beta * logVariance;

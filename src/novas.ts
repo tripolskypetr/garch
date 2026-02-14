@@ -7,6 +7,8 @@ import {
   perCandleParkinson,
   calculateAIC,
   calculateBIC,
+  studentTNegLL,
+  profileStudentTDf,
 } from './utils.js';
 
 export interface NoVaSOptions {
@@ -153,20 +155,12 @@ export class NoVaS {
       : sampleVariance(returns);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
-    // Gaussian log-likelihood for AIC comparison with GARCH/EGARCH/HAR-RV
+    // Student-t log-likelihood for AIC comparison with GARCH/EGARCH/HAR-RV
     const varianceSeries = this.getVarianceSeriesInternal(weights);
-    let ll = 0;
-    for (let i = 0; i < n; i++) {
-      const v = varianceSeries[i];
-      if (v <= 1e-20 || !isFinite(v)) {
-        ll += -1e6;
-        continue;
-      }
-      ll += Math.log(v) + (returns[i] ** 2) / v;
-    }
-    ll = -ll / 2;
+    const df = profileStudentTDf(returns, varianceSeries);
+    const ll = -studentTNegLL(returns, varianceSeries, df);
 
-    const numParams = p + 1;
+    const numParams = p + 2; // weights + df
     const nObs = n - p; // usable observations for D²
 
     return {
@@ -177,6 +171,7 @@ export class NoVaS {
         unconditionalVariance,
         annualizedVol,
         dSquared: result.fx,
+        df,
       },
       diagnostics: {
         logLikelihood: ll,

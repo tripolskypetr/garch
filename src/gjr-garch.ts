@@ -8,6 +8,7 @@ import {
   perCandleParkinson,
   calculateAIC,
   calculateBIC,
+  logGamma,
 } from './utils.js';
 
 export interface GjrGarchOptions {
@@ -69,11 +70,16 @@ export class GjrGarch {
     const rv = this.rv;
 
     function negLogLikelihood(params: number[]): number {
-      const [omega, alpha, gamma, beta] = params;
+      const [omega, alpha, gamma, beta, df] = params;
 
       if (omega <= 1e-12) return 1e10;
       if (alpha < 0 || gamma < 0 || beta < 0) return 1e10;
       if (alpha + gamma / 2 + beta >= 0.9999) return 1e10;
+      if (df <= 2.01 || df > 100) return 1e10;
+
+      const halfDfPlus1 = (df + 1) / 2;
+      const dfMinus2 = df - 2;
+      const constant = n * (logGamma(halfDfPlus1) - logGamma(df / 2) - 0.5 * Math.log(Math.PI * dfMinus2));
 
       let variance = initVar;
       let ll = 0;
@@ -87,26 +93,28 @@ export class GjrGarch {
 
         if (variance <= 1e-12) return 1e10;
 
-        ll += Math.log(variance) + (returns[i] ** 2) / variance;
+        // Student-t log-likelihood
+        ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));
       }
 
-      return ll / 2;
+      return -(ll + constant);
     }
 
     const omega0 = initVar * 0.05;
     const alpha0 = 0.05;
     const gamma0 = 0.1;
     const beta0 = 0.85;
+    const df0 = 5;
 
-    const result = nelderMead(negLogLikelihood, [omega0, alpha0, gamma0, beta0], { maxIter, tol });
+    const result = nelderMead(negLogLikelihood, [omega0, alpha0, gamma0, beta0, df0], { maxIter, tol });
 
-    const [omega, alpha, gamma, beta] = result.x;
+    const [omega, alpha, gamma, beta, df] = result.x;
     const persistence = alpha + gamma / 2 + beta;
     const unconditionalVariance = omega / (1 - persistence);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
     const logLikelihood = -result.fx;
-    const numParams = 4;
+    const numParams = 5;
 
     return {
       params: {
@@ -118,6 +126,7 @@ export class GjrGarch {
         unconditionalVariance,
         annualizedVol,
         leverageEffect: gamma,
+        df,
       },
       diagnostics: {
         logLikelihood,

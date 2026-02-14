@@ -6,6 +6,8 @@ import {
   perCandleParkinson,
   calculateAIC,
   calculateBIC,
+  studentTNegLL,
+  profileStudentTDf,
 } from './utils.js';
 
 export interface HarRvOptions {
@@ -207,20 +209,12 @@ export class HarRv {
       : sampleVariance(this.returns);
     const annualizedVol = Math.sqrt(Math.abs(unconditionalVariance) * this.periodsPerYear) * 100;
 
-    // Gaussian log-likelihood on returns using HAR-RV fitted variances
+    // Student-t log-likelihood on returns using HAR-RV fitted variances
     const varianceSeries = this.getVarianceSeriesInternal(result.beta);
-    let ll = 0;
-    for (let i = 0; i < this.returns.length; i++) {
-      const v = varianceSeries[i];
-      if (v <= 1e-20 || !isFinite(v)) {
-        ll += -1e6;
-        continue;
-      }
-      ll += Math.log(v) + (this.returns[i] ** 2) / v;
-    }
-    ll = -ll / 2;
+    const df = profileStudentTDf(this.returns, varianceSeries);
+    const ll = -studentTNegLL(this.returns, varianceSeries, df);
 
-    const numParams = 4;
+    const numParams = 5; // beta0, betaShort, betaMedium, betaLong, df
 
     return {
       params: {
@@ -232,6 +226,7 @@ export class HarRv {
         unconditionalVariance,
         annualizedVol,
         r2: result.r2,
+        df,
       },
       diagnostics: {
         logLikelihood: ll,

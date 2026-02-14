@@ -17,6 +17,10 @@ export {
   perCandleParkinson,
   ljungBox,
   EXPECTED_ABS_NORMAL,
+  logGamma,
+  expectedAbsStudentT,
+  studentTNegLL,
+  profileStudentTDf,
 } from './utils.js';
 
 // Prediction

@@ -216,6 +216,112 @@ export function ljungBox(data: number[], maxLag: number): { statistic: number; p
   return { statistic: Q, pValue: chi2Survival(Q, maxLag) };
 }
 
+// ── Student-t distribution helpers ─────────────────────────────
+
+/**
+ * Log-Gamma function via Lanczos approximation (g=7, n=9).
+ * Accurate to ~15 digits for x > 0.
+ */
+export function logGamma(x: number): number {
+  if (x <= 0) return Infinity;
+  const g = 7;
+  const c = [
+    0.99999999999980993,
+    676.5203681218851,
+    -1259.1392167224028,
+    771.32342877765313,
+    -176.61502916214059,
+    12.507343278686905,
+    -0.13857109526572012,
+    9.9843695780195716e-6,
+    1.5056327351493116e-7,
+  ];
+  let sum = c[0];
+  for (let i = 1; i < g + 2; i++) {
+    sum += c[i] / (x - 1 + i);
+  }
+  const t = x - 1 + g + 0.5;
+  return 0.5 * Math.log(2 * Math.PI) + (x - 0.5) * Math.log(t) - t + Math.log(sum);
+}
+
+/**
+ * Per-observation Student-t negative log-likelihood contribution.
+ *
+ * For standardized t(df) with variance σ²_t:
+ *   -LL_i = 0.5·ln(σ²_t) + ((df+1)/2)·ln(1 + r²_t / ((df-2)·σ²_t))
+ *         - lnΓ((df+1)/2) + lnΓ(df/2) + 0.5·ln(π·(df-2))
+ *
+ * Returns the per-observation neg-LL (without the constant terms).
+ * Caller accumulates and adds the constant once.
+ */
+export function studentTNegLL(
+  returns: number[],
+  varianceSeries: number[],
+  df: number,
+): number {
+  const n = returns.length;
+  // Constant part (same for all observations)
+  const halfDfPlus1 = (df + 1) / 2;
+  const constant = n * (
+    logGamma(df / 2) - logGamma(halfDfPlus1) + 0.5 * Math.log(Math.PI * (df - 2))
+  );
+
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    const v = varianceSeries[i];
+    if (v <= 1e-12 || !isFinite(v)) return 1e10;
+    sum += 0.5 * Math.log(v) + halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / ((df - 2) * v));
+  }
+
+  return sum + constant;
+}
+
+/**
+ * E[|Z|] where Z follows a standardized Student-t(df) distribution (variance = 1).
+ *
+ * E[|Z|] = √((df-2)/π) · Γ((df-1)/2) / Γ(df/2)
+ *
+ * Converges to √(2/π) as df → ∞ (Gaussian limit).
+ */
+export function expectedAbsStudentT(df: number): number {
+  if (df <= 2) return EXPECTED_ABS_NORMAL; // fallback
+  return Math.sqrt((df - 2) / Math.PI) * Math.exp(logGamma((df - 1) / 2) - logGamma(df / 2));
+}
+
+/**
+ * 1D grid search for optimal df that minimizes Student-t neg-LL.
+ * Used by HAR-RV and NoVaS where df is profiled after main optimization.
+ */
+export function profileStudentTDf(
+  returns: number[],
+  varianceSeries: number[],
+): number {
+  let bestDf = 30;
+  let bestNLL = studentTNegLL(returns, varianceSeries, 30);
+
+  // Coarse grid: 2.5 to 50
+  for (let df = 2.5; df <= 50; df += 0.5) {
+    const nll = studentTNegLL(returns, varianceSeries, df);
+    if (nll < bestNLL) {
+      bestNLL = nll;
+      bestDf = df;
+    }
+  }
+
+  // Fine grid around best
+  const lo = Math.max(2.1, bestDf - 1);
+  const hi = bestDf + 1;
+  for (let df = lo; df <= hi; df += 0.05) {
+    const nll = studentTNegLL(returns, varianceSeries, df);
+    if (nll < bestNLL) {
+      bestNLL = nll;
+      bestDf = df;
+    }
+  }
+
+  return bestDf;
+}
+
 /**
  * Calculate AIC (Akaike Information Criterion)
  */
