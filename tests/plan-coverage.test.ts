@@ -321,7 +321,7 @@ describe('predict output field consistency', () => {
 
     expect(typeof result.reliable).toBe('boolean');
     expect(typeof result.modelType).toBe('string');
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(result.sigma).toBeGreaterThanOrEqual(0);
     expect(Number.isFinite(result.sigma)).toBe(true);
     expect(Number.isFinite(result.move)).toBe(true);

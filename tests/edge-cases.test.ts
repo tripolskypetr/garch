@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
@@ -93,6 +94,17 @@ describe('Candle[] end-to-end', () => {
     expect(fc.variance.every(v => v > 0 && Number.isFinite(v))).toBe(true);
   });
 
+  it('GJR-GARCH: construct → fit → forecast', () => {
+    const candles = makeCandles(200);
+    const model = new GjrGarch(candles);
+    const result = model.fit();
+    const fc = model.forecast(result.params, 10);
+
+    expect(result.params.persistence).toBeLessThan(1);
+    expect(result.diagnostics.converged).toBe(true);
+    expect(fc.variance.every(v => v > 0 && Number.isFinite(v))).toBe(true);
+  });
+
   it('candle returns use only close prices (OHLV ignored)', () => {
     const candles1: Candle[] = [
       { open: 99, high: 102, low: 98, close: 100, volume: 1000 },
@@ -154,6 +166,16 @@ describe('forecast edge cases', () => {
 
     expect(fc0.variance).toHaveLength(1);
     expect(fc0.variance[0]).toBeGreaterThan(0);
+  });
+
+  it('GJR-GARCH forecast(params, 0) still returns one step', () => {
+    const model = new GjrGarch(makePrices(55));
+    const result = model.fit();
+    const fc0 = model.forecast(result.params, 0);
+    const fc1 = model.forecast(result.params, 1);
+
+    expect(fc0.variance).toHaveLength(1);
+    expect(fc0.variance[0]).toBe(fc1.variance[0]);
   });
 });
 

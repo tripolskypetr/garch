@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   calibrateGarch,
   calibrateEgarch,
+  calibrateGjrGarch,
   calculateReturns,
   calculateReturnsFromPrices,
   checkLeverageEffect,
@@ -186,6 +188,26 @@ describe('EGARCH numParams = 4', () => {
   it('BIC = 4·ln(n) − 2·LL where n = number of returns', () => {
     const prices = makePrices(200);
     const result = calibrateEgarch(prices);
+    const n = prices.length - 1;
+    const { logLikelihood, bic } = result.diagnostics;
+
+    expect(bic).toBeCloseTo(4 * Math.log(n) - 2 * logLikelihood, 10);
+  });
+});
+
+// ── 9. GJR-GARCH uses numParams = 4 for AIC/BIC ────────────
+
+describe('GJR-GARCH numParams = 4', () => {
+  it('AIC = 2·4 − 2·LL', () => {
+    const result = calibrateGjrGarch(makePrices(200));
+    const { logLikelihood, aic } = result.diagnostics;
+
+    expect(aic).toBeCloseTo(2 * 4 - 2 * logLikelihood, 10);
+  });
+
+  it('BIC = 4·ln(n) − 2·LL where n = number of returns', () => {
+    const prices = makePrices(200);
+    const result = calibrateGjrGarch(prices);
     const n = prices.length - 1;
     const { logLikelihood, bic } = result.diagnostics;
 

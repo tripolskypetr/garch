@@ -670,7 +670,7 @@ describe('NoVaS integration with predict', () => {
   it('predict should accept novas as modelType', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(result.sigma).toBeGreaterThan(0);
     expect(Number.isFinite(result.sigma)).toBe(true);
   });
@@ -714,7 +714,7 @@ describe('NoVaS integration with predict', () => {
       const result = predict(candles, interval as any);
       expect(result.sigma).toBeGreaterThan(0);
       expect(Number.isFinite(result.sigma)).toBe(true);
-      expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     }
   });
 
@@ -743,7 +743,7 @@ describe('NoVaS integration with predict', () => {
       candles.push({ open: price, high: price + 1e-13, low: price - 1e-13, close: price, volume: 1000 });
     }
     const result = predict(candles, '8h');
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(Number.isFinite(result.sigma)).toBe(true);
   });
 });

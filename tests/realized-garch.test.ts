@@ -2,9 +2,11 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   NoVaS,
   calibrateGarch,
   calibrateEgarch,
+  calibrateGjrGarch,
   calibrateNoVaS,
   perCandleParkinson,
   predict,
@@ -245,7 +247,92 @@ describe('EGARCH getVarianceSeries magnitude path with Candle[]', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// 4–5. Bad OHLC: NaN/Infinity and high < low for GARCH/EGARCH
+// 3b. Realized GJR-GARCH (Candle[] → Parkinson RV)
+// ═══════════════════════════════════════════════════════════════
+
+describe('Realized GJR-GARCH (Candle[] uses Parkinson RV)', () => {
+  it('Candle[] and number[] produce different GJR-GARCH params', () => {
+    const candles = makeCandles(200, 42);
+    const prices = candles.map(c => c.close);
+
+    const resultCandles = calibrateGjrGarch(candles);
+    const resultPrices = calibrateGjrGarch(prices);
+
+    expect(resultCandles.diagnostics.converged).toBe(true);
+    expect(resultPrices.diagnostics.converged).toBe(true);
+
+    const diff = Math.abs(resultCandles.params.alpha - resultPrices.params.alpha)
+      + Math.abs(resultCandles.params.omega - resultPrices.params.omega)
+      + Math.abs(resultCandles.params.gamma - resultPrices.params.gamma);
+    expect(diff).toBeGreaterThan(1e-6);
+  });
+
+  it('flat candles (H=L) degrade to classical GJR-GARCH', () => {
+    const candles = makeFlatCandles(200, 42);
+    const prices = candles.map(c => c.close);
+
+    const rc = calibrateGjrGarch(candles);
+    const rp = calibrateGjrGarch(prices);
+
+    expect(rc.params.alpha).toBeCloseTo(rp.params.alpha, 3);
+    expect(rc.params.beta).toBeCloseTo(rp.params.beta, 3);
+    expect(rc.params.gamma).toBeCloseTo(rp.params.gamma, 3);
+  });
+
+  it('Realized GJR-GARCH variance series all positive and finite', () => {
+    const candles = makeCandles(200, 42);
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    const vs = model.getVarianceSeries(fit.params);
+
+    for (const v of vs) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it('GJR-GARCH multi-step forecast with Candle[]: step 2+ use effective persistence', () => {
+    const candles = makeCandles(200, 42);
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    const { omega, alpha, gamma, beta } = fit.params;
+
+    const fc = model.forecast(fit.params, 10);
+
+    for (let h = 1; h < 10; h++) {
+      const expected = omega + (alpha + gamma / 2 + beta) * fc.variance[h - 1];
+      expect(fc.variance[h]).toBeCloseTo(expected, 12);
+    }
+  });
+
+  it('Realized GJR-GARCH scale invariance — 1000× prices → same vol', () => {
+    const candles1 = makeCandles(200, 42);
+    const candles2 = candles1.map(c => ({
+      open: c.open * 1000, high: c.high * 1000,
+      low: c.low * 1000, close: c.close * 1000, volume: c.volume,
+    }));
+
+    const r1 = calibrateGjrGarch(candles1);
+    const r2 = calibrateGjrGarch(candles2);
+
+    expect(r1.params.annualizedVol).toBeCloseTo(r2.params.annualizedVol, 1);
+  });
+
+  it('all-identical OHLC candles do not crash GJR-GARCH', () => {
+    const candles: Candle[] = [];
+    for (let i = 0; i < 100; i++) {
+      candles.push({ open: 100, high: 100, low: 100, close: 100, volume: 1000 });
+    }
+
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    expect(fit.params).toBeDefined();
+    expect(fit.diagnostics).toBeDefined();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 4–5. Bad OHLC: NaN/Infinity and high < low for GARCH/EGARCH/GJR-GARCH
 // ═══════════════════════════════════════════════════════════════
 
 describe('bad OHLC data in GARCH/EGARCH', () => {
@@ -287,6 +374,24 @@ describe('bad OHLC data in GARCH/EGARCH', () => {
     const c = candles[50];
     candles[50] = { ...c, high: c.low * 0.99, low: c.high * 1.01 };
     const model = new Egarch(candles);
+    const fit = model.fit();
+    expect(fit.diagnostics.converged).toBe(true);
+  });
+
+  it('GJR-GARCH with NaN high does not crash', () => {
+    const candles = makeCandles(100, 42);
+    candles[50] = { ...candles[50], high: NaN };
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    expect(fit.params).toBeDefined();
+    expect(fit.diagnostics).toBeDefined();
+  });
+
+  it('GJR-GARCH with high < low does not crash', () => {
+    const candles = makeCandles(100, 42);
+    const c = candles[50];
+    candles[50] = { ...c, high: c.low * 0.99, low: c.high * 1.01 };
+    const model = new GjrGarch(candles);
     const fit = model.fit();
     expect(fit.diagnostics.converged).toBe(true);
   });
@@ -343,7 +448,7 @@ describe('fitModel Parkinson RV verification', () => {
     expect(result.sigma).toBeGreaterThan(0);
     expect(Number.isFinite(result.sigma)).toBe(true);
     expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
   });
 
   it('predict() Candle[] vs number[]-derived candles — sigma differs', () => {
@@ -580,6 +685,21 @@ describe('sub-50 Candle[] constructor error', () => {
     const candles = makeCandles(50, 42);
     expect(() => new Egarch(candles)).not.toThrow();
   });
+
+  it('GJR-GARCH throws with 10 candles', () => {
+    const candles = makeCandles(10, 42);
+    expect(() => new GjrGarch(candles)).toThrow('Need at least 50 data points');
+  });
+
+  it('GJR-GARCH throws with 49 candles (boundary)', () => {
+    const candles = makeCandles(49, 42);
+    expect(() => new GjrGarch(candles)).toThrow('Need at least 50 data points');
+  });
+
+  it('GJR-GARCH accepts exactly 50 candles', () => {
+    const candles = makeCandles(50, 42);
+    expect(() => new GjrGarch(candles)).not.toThrow();
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -608,12 +728,21 @@ describe('all-identical candles (O=H=L=C) edge case', () => {
     }
 
     const model = new Egarch(candles);
-    // log(0) = -Infinity for initial variance; optimizer runs but params degenerate
     const fit = model.fit();
     expect(fit.params).toBeDefined();
     expect(fit.diagnostics).toBeDefined();
-    // With zero variance initial, EGARCH cannot converge meaningfully
-    // — the important thing is no crash / no uncaught exception
+  });
+
+  it('GJR-GARCH handles constant-price candles without throwing', () => {
+    const candles: Candle[] = [];
+    for (let i = 0; i < 100; i++) {
+      candles.push({ open: 100, high: 100, low: 100, close: 100, volume: 1000 });
+    }
+
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    expect(fit.params).toBeDefined();
+    expect(fit.diagnostics).toBeDefined();
   });
 });
 
@@ -859,11 +988,11 @@ describe('predict fallback when NoVaS fails', () => {
     const result = predict(candles, '4h');
     expect(result).toBeDefined();
     expect(Number.isFinite(result.sigma)).toBe(true);
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
   });
 
   it('predict always returns a valid modelType across 20 seeds', () => {
-    const validTypes = ['garch', 'egarch', 'har-rv', 'novas'];
+    const validTypes = ['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas'];
     for (let seed = 1; seed <= 20; seed++) {
       const candles = makeCandles(200, seed);
       const result = predict(candles, '4h');
@@ -893,7 +1022,7 @@ describe('predict fallback when NoVaS fails', () => {
     const result = predict(candles, '4h');
 
     // The result must come from one of the four models
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     // Forecast corridor must be well-formed
     expect(result.move).toBeGreaterThanOrEqual(0);
     expect(result.upperPrice).toBeCloseTo(result.currentPrice + result.move, 8);

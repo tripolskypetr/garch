@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   calibrateGarch,
   calibrateEgarch,
+  calibrateGjrGarch,
   EXPECTED_ABS_NORMAL,
 } from '../src/index.js';
 
@@ -83,8 +85,17 @@ describe('Cross-model consistency', () => {
     const gUV = calibrateGarch(prices).params.unconditionalVariance;
     const eUV = calibrateEgarch(prices).params.unconditionalVariance;
 
-    // Within same order of magnitude
     const ratio = gUV / eUV;
+    expect(ratio).toBeGreaterThan(0.1);
+    expect(ratio).toBeLessThan(10);
+  });
+
+  it('GARCH and GJR-GARCH: similar unconditional variance on same data', () => {
+    const prices = makePrices(500);
+    const gUV = calibrateGarch(prices).params.unconditionalVariance;
+    const gjrUV = calibrateGjrGarch(prices).params.unconditionalVariance;
+
+    const ratio = gUV / gjrUV;
     expect(ratio).toBeGreaterThan(0.1);
     expect(ratio).toBeLessThan(10);
   });
@@ -110,6 +121,17 @@ describe('Cross-model consistency', () => {
       / result.params.annualizedVol;
 
     expect(relErr).toBeLessThan(0.05);
+  });
+
+  it('GJR-GARCH forecast annualized vol converges to params.annualizedVol', () => {
+    const model = new GjrGarch(makePrices(200));
+    const result = model.fit();
+    const fc = model.forecast(result.params, 500);
+
+    const relErr = Math.abs(fc.annualized[499] - result.params.annualizedVol)
+      / result.params.annualizedVol;
+
+    expect(relErr).toBeLessThan(0.01);
   });
 });
 

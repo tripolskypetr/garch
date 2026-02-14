@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Garch, Egarch } from '../src/index.js';
+import { Garch, Egarch, GjrGarch } from '../src/index.js';
 
 function makePrices(n: number, seed = 12345): number[] {
   const prices = [100];
@@ -87,6 +87,28 @@ describe('Numerical stability', () => {
       expect(v).toBeGreaterThan(0);
     }
   });
+
+  it('GJR-GARCH: near-constant prices fits without crashing', () => {
+    const prices: number[] = [100];
+    let state = 42;
+    for (let i = 1; i <= 54; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      prices.push(prices[i - 1] * (1 + ((state / 0x7fffffff) - 0.5) * 1e-6));
+    }
+
+    const result = new GjrGarch(prices).fit();
+    expect(Number.isFinite(result.params.omega)).toBe(true);
+    expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
+  });
+
+  it('GJR-GARCH: extreme outlier single 50% drop', () => {
+    const prices = makePrices(200);
+    prices[100] *= 0.5;
+
+    const result = new GjrGarch(prices).fit();
+    expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
+    expect(result.params.persistence).toBeLessThan(1);
+  });
 });
 
 // ── Input validation ────────────────────────────────────────
@@ -95,11 +117,13 @@ describe('Input validation', () => {
   it('50 prices (boundary): does not throw', () => {
     expect(() => new Garch(makePrices(50))).not.toThrow();
     expect(() => new Egarch(makePrices(50))).not.toThrow();
+    expect(() => new GjrGarch(makePrices(50))).not.toThrow();
   });
 
   it('49 prices: throws', () => {
     expect(() => new Garch(makePrices(49))).toThrow('at least 50');
     expect(() => new Egarch(makePrices(49))).toThrow('at least 50');
+    expect(() => new GjrGarch(makePrices(49))).toThrow('at least 50');
   });
 
   it('negative price: throws', () => {

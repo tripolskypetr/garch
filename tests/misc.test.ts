@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
@@ -83,6 +84,18 @@ describe('Immutability', () => {
 
   it('Egarch.getReturns() returns a copy', () => {
     const model = new Egarch(makePrices(55));
+    const a = model.getReturns();
+    const b = model.getReturns();
+
+    expect(a).toEqual(b);
+    expect(a).not.toBe(b);
+
+    a[0] = 999;
+    expect(model.getReturns()[0]).not.toBe(999);
+  });
+
+  it('GjrGarch.getReturns() returns a copy', () => {
+    const model = new GjrGarch(makePrices(55));
     const a = model.getReturns();
     const b = model.getReturns();
 

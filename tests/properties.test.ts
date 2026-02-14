@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   calibrateGarch,
   calibrateEgarch,
+  calibrateGjrGarch,
   sampleVariance,
   EXPECTED_ABS_NORMAL,
 } from '../src/index.js';
@@ -155,6 +157,13 @@ describe('Model selection', () => {
 
     expect(Math.abs(result.params.gamma)).toBeLessThan(0.1);
   });
+
+  it('GJR-GARCH on symmetric data: γ is small', () => {
+    const prices = generateGarchData(1000, 0.00001, 0.1, 0.85, 555);
+    const result = calibrateGjrGarch(prices);
+
+    expect(result.params.gamma).toBeLessThan(0.15);
+  });
 });
 
 // ── Forecast properties ─────────────────────────────────────
@@ -193,6 +202,17 @@ describe('Forecast properties', () => {
     const relErr = Math.abs(fc.variance[499] - unconditional) / unconditional;
 
     expect(relErr).toBeLessThan(0.05);
+  });
+
+  it('GJR-GARCH long horizon → ω/(1−α−γ/2−β)', () => {
+    const model = new GjrGarch(makePrices(200));
+    const result = model.fit();
+    const unconditional = result.params.unconditionalVariance;
+
+    const fc = model.forecast(result.params, 500);
+    const relErr = Math.abs(fc.variance[499] - unconditional) / unconditional;
+
+    expect(relErr).toBeLessThan(0.001);
   });
 
   it('GARCH forecast is monotonic toward unconditional', () => {

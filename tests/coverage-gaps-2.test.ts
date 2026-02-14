@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   calibrateGarch,
   calibrateEgarch,
+  calibrateGjrGarch,
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
@@ -193,6 +195,22 @@ describe('Instance isolation', () => {
     const r1again = model1.fit();
     expect(r1again.params.omega).toBe(r1.params.omega);
   });
+
+  it('two GjrGarch instances do not share state', () => {
+    const prices1 = makePrices(100, 111);
+    const prices2 = makePrices(100, 222);
+
+    const model1 = new GjrGarch(prices1);
+    const model2 = new GjrGarch(prices2);
+
+    const r1 = model1.fit();
+    const r2 = model2.fit();
+
+    expect(r1.params.omega).not.toBe(r2.params.omega);
+
+    const r1again = model1.fit();
+    expect(r1again.params.omega).toBe(r1.params.omega);
+  });
 });
 
 // ── 5 & 6. forecast annualized scales with periodsPerYear ───
@@ -261,6 +279,16 @@ describe('Large data (n > 5000)', () => {
 
     expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
     expect(Math.abs(result.params.beta)).toBeLessThan(1);
+  });
+
+  it('GJR-GARCH fits 10K prices without error', () => {
+    const prices = makePrices(10001, 77);
+    const model = new GjrGarch(prices);
+    const result = model.fit();
+
+    expect(result.diagnostics.converged).toBe(true);
+    expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
+    expect(result.params.persistence).toBeLessThan(1);
   });
 });
 

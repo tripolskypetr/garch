@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  GjrGarch,
   calibrateGarch,
   calibrateEgarch,
+  calibrateGjrGarch,
   calculateReturns,
   calculateReturnsFromPrices,
   checkLeverageEffect,
@@ -238,6 +240,19 @@ describe('getVarianceSeries immutability', () => {
     a[0] = 999;
     expect(model.getVarianceSeries(result.params)[0]).not.toBe(999);
   });
+
+  it('GJR-GARCH: returns different reference each call', () => {
+    const model = new GjrGarch(makePrices(55));
+    const result = model.fit();
+    const a = model.getVarianceSeries(result.params);
+    const b = model.getVarianceSeries(result.params);
+
+    expect(a).toEqual(b);
+    expect(a).not.toBe(b);
+
+    a[0] = 999;
+    expect(model.getVarianceSeries(result.params)[0]).not.toBe(999);
+  });
 });
 
 // ── 9. forecast returns new arrays each time ────────────────
@@ -266,6 +281,18 @@ describe('forecast immutability', () => {
     expect(fc1.volatility).not.toBe(fc2.volatility);
     expect(fc1.annualized).not.toBe(fc2.annualized);
   });
+
+  it('GJR-GARCH: forecast returns new arrays', () => {
+    const model = new GjrGarch(makePrices(55));
+    const result = model.fit();
+    const fc1 = model.forecast(result.params, 5);
+    const fc2 = model.forecast(result.params, 5);
+
+    expect(fc1.variance).toEqual(fc2.variance);
+    expect(fc1.variance).not.toBe(fc2.variance);
+    expect(fc1.volatility).not.toBe(fc2.volatility);
+    expect(fc1.annualized).not.toBe(fc2.annualized);
+  });
 });
 
 // ── 10. getInitialVariance stable after fit ─────────────────
@@ -282,6 +309,15 @@ describe('getInitialVariance stability', () => {
 
   it('EGARCH: getInitialVariance same before and after fit', () => {
     const model = new Egarch(makePrices(100));
+    const before = model.getInitialVariance();
+    model.fit();
+    const after = model.getInitialVariance();
+
+    expect(after).toBe(before);
+  });
+
+  it('GJR-GARCH: getInitialVariance same before and after fit', () => {
+    const model = new GjrGarch(makePrices(100));
     const before = model.getInitialVariance();
     model.fit();
     const after = model.getInitialVariance();

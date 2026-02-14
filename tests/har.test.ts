@@ -384,7 +384,7 @@ describe('HAR-RV integration with predict', () => {
   it('predict should accept har-rv as modelType', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(result.sigma).toBeGreaterThan(0);
     expect(Number.isFinite(result.sigma)).toBe(true);
   });
@@ -434,7 +434,7 @@ describe('HAR-RV integration with predict', () => {
       const result = predict(candles, interval as any);
       expect(result.sigma).toBeGreaterThan(0);
       expect(Number.isFinite(result.sigma)).toBe(true);
-      expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     }
   });
 
@@ -975,7 +975,7 @@ describe('HAR-RV model selection in predict', () => {
   it('predict returns valid result for HAR-structured data', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(Number.isFinite(result.sigma)).toBe(true);
     expect(result.sigma).toBeGreaterThanOrEqual(0);
   });
@@ -987,7 +987,7 @@ describe('HAR-RV model selection in predict', () => {
       expect(Number.isFinite(result.sigma)).toBe(true);
       expect(Number.isFinite(result.move)).toBe(true);
       expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
-      expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
     }
   });
 
