@@ -248,7 +248,17 @@ Multi-step forecast via iterative substitution: each predicted RV feeds back int
 
 ### NoVaS
 
-Normalizing and Variance-Stabilizing transformation (Politis, 2003). Model-free approach using the ARCH frame:
+Normalizing and Variance-Stabilizing transformation (Politis, 2003). Model-free approach using the ARCH frame. Input type determines the innovation term automatically:
+
+**Candle[] input** — Realized NoVaS. Uses Parkinson (1980) per-candle RV as innovation (~5× more efficient than squared returns):
+
+```
+sigma_t^2 = a_0 + a_1 * RV_{t-1} + a_2 * RV_{t-2} + ... + a_p * RV_{t-p}
+RV_t = (1 / (4·ln2)) · ln(H/L)^2     (Parkinson estimator)
+W_t  = X_t / sigma_t
+```
+
+**number[] input** — Classical NoVaS. Uses squared returns:
 
 ```
 sigma_t^2 = a_0 + a_1 * X_{t-1}^2 + a_2 * X_{t-2}^2 + ... + a_p * X_{t-p}^2
@@ -264,17 +274,18 @@ D^2 = S^2 + (K - 3)^2
 where **S** = skewness and **K** = kurtosis of {W_t}. For perfect normality D^2 = 0.
 
 - **a_0** > 0 — baseline variance
-- **a_j** >= 0 — weight on j-th lagged squared return
+- **a_j** >= 0 — weight on j-th lagged innovation (RV or squared return)
 - Stationarity: **sum(a_1 ... a_p) < 1**
 - Unconditional variance: **E[sigma^2] = a_0 / (1 - sum(a_1 ... a_p))**
 - Default lags: **p = 10** (configurable)
+- Parkinson RV is less noisy than r², so Candle[] typically achieves lower D^2
 
 Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses Nelder-Mead for optimization.
 
-Multi-step forecast: replace future X^2 with sigma^2 (since E[X^2] = sigma^2):
+Multi-step forecast: replace future innovations with sigma^2 (since E[RV] = E[X^2] = sigma^2):
 
 ```
-sigma_{t+h}^2 = a_0 + sum_j a_j * E[X_{t+h-j}^2]
+sigma_{t+h}^2 = a_0 + sum_j a_j * E[innovation_{t+h-j}]
 ```
 
 ### Model Auto-Selection
@@ -294,7 +305,7 @@ fitModel()
   \-- return min(AIC_1, AIC_2, AIC_3)
 ```
 
-When given `Candle[]`, all three OHLC-aware models (GARCH, EGARCH, HAR-RV) use Parkinson per-candle RV instead of squared returns, extracting ~5× more information from the same data.
+When given `Candle[]`, all four OHLC-aware models (GARCH, EGARCH, HAR-RV, NoVaS) use Parkinson per-candle RV instead of squared returns, extracting ~5× more information from the same data.
 
 GARCH/EGARCH tends to win on data with pronounced shock reactions or leverage effects. HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). NoVaS tends to win on short, volatile data where parametric assumptions break down.
 
