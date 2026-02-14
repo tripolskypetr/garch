@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { predict, predictRange, backtest } from '../src/index.js';
+import { Garch, predict, predictRange, backtest } from '../src/index.js';
 import type { Candle } from '../src/index.js';
 
 // ── helpers ──────────────────────────────────────────────────
@@ -68,7 +68,7 @@ describe('flash crash', () => {
     assertSaneResult(result, 'flash-crash-start');
   });
 
-  it('flash crash increases sigma vs same data without crash', () => {
+  it('flash crash increases GARCH sigma vs same data without crash', () => {
     // Build identical base data, then inject crash into a copy
     const rng = lcg(42);
     const base: Candle[] = [];
@@ -85,8 +85,15 @@ describe('flash crash', () => {
     const crashClose = prevClose * Math.exp(-0.7);
     crashed[190] = { open: prevClose, high: prevClose * 1.005, low: crashClose * 0.995, close: crashClose, volume: 5000 };
 
-    const calmSigma = predict(base, '4h').sigma;
-    const crashSigma = predict(crashed, '4h').sigma;
+    // Test GARCH directly — crash must increase conditional variance
+    const calmModel = new Garch(base, { periodsPerYear: 2190 });
+    const calmFit = calmModel.fit();
+    const calmSigma = calmModel.forecast(calmFit.params, 1).volatility[0];
+
+    const crashModel = new Garch(crashed, { periodsPerYear: 2190 });
+    const crashFit = crashModel.fit();
+    const crashSigma = crashModel.forecast(crashFit.params, 1).volatility[0];
+
     expect(crashSigma).toBeGreaterThan(calmSigma);
   });
 });
