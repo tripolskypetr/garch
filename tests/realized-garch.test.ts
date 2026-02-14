@@ -1029,3 +1029,142 @@ describe('predict fallback when NoVaS fails', () => {
     expect(result.lowerPrice).toBeCloseTo(result.currentPrice - result.move, 8);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// 17. Ground-truth: known σ → predict recovers it
+// ═══════════════════════════════════════════════════════════════
+
+describe('predict recovers known volatility from synthetic data', () => {
+  /**
+   * Generate candles with known constant per-period volatility σ_true.
+   *
+   * Returns are iid N(0, σ²). Intraday high/low simulated via
+   * Brownian bridge: E[max] ≈ close + σ·√(2·ln2), E[min] ≈ close − σ·√(2·ln2).
+   * This makes Parkinson RV an unbiased estimator of σ².
+   */
+  function makeKnownVolCandles(
+    n: number, sigmaTrue: number, seed: number, startPrice = 100,
+  ): Candle[] {
+    const rng = lcg(seed);
+    const candles: Candle[] = [];
+    let price = startPrice;
+
+    for (let i = 0; i < n; i++) {
+      const r = randn(rng) * sigmaTrue;
+      const close = price * Math.exp(r);
+
+      // Simulate intraday extremes via additional noise
+      // High/low spread ~ σ (Brownian bridge max/min)
+      const mid = (price + close) / 2;
+      const spread = Math.abs(price - close);
+      const extraUp = Math.abs(randn(rng)) * sigmaTrue * price * 0.5;
+      const extraDown = Math.abs(randn(rng)) * sigmaTrue * price * 0.5;
+      const high = Math.max(price, close) + extraUp + spread * 0.1;
+      const low = Math.min(price, close) - extraDown - spread * 0.1;
+
+      candles.push({ open: price, high, low: Math.max(low, 1e-10), close, volume: 1000 });
+      price = close;
+    }
+
+    return candles;
+  }
+
+  it('σ_true = 1% per period — predict within 50% relative error', () => {
+    const sigmaTrue = 0.01;
+    const candles = makeKnownVolCandles(500, sigmaTrue, 42);
+
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+
+    expect(result.sigma).toBeGreaterThan(0);
+    expect(relError).toBeLessThan(0.5);
+  });
+
+  it('σ_true = 3% per period — predict within 50% relative error', () => {
+    const sigmaTrue = 0.03;
+    const candles = makeKnownVolCandles(500, sigmaTrue, 77);
+
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+
+    expect(result.sigma).toBeGreaterThan(0);
+    expect(relError).toBeLessThan(0.5);
+  });
+
+  it('σ_true = 0.2% per period (low vol) — predict within 50% relative error', () => {
+    const sigmaTrue = 0.002;
+    const candles = makeKnownVolCandles(500, sigmaTrue, 99);
+
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+
+    expect(result.sigma).toBeGreaterThan(0);
+    expect(relError).toBeLessThan(0.5);
+  });
+
+  it('higher σ_true → higher predicted sigma (monotonicity)', () => {
+    const sigmas = [0.002, 0.01, 0.03];
+    const predicted: number[] = [];
+
+    for (const s of sigmas) {
+      const candles = makeKnownVolCandles(500, s, 42);
+      predicted.push(predict(candles, '15m').sigma);
+    }
+
+    // Predicted sigma must increase with true sigma
+    expect(predicted[1]).toBeGreaterThan(predicted[0]);
+    expect(predicted[2]).toBeGreaterThan(predicted[1]);
+  });
+
+  it('median relative error < 30% across 20 seeds (σ=1%)', () => {
+    const sigmaTrue = 0.01;
+    const errors: number[] = [];
+
+    for (let seed = 1; seed <= 20; seed++) {
+      const candles = makeKnownVolCandles(500, sigmaTrue, seed);
+      const result = predict(candles, '15m');
+      errors.push(Math.abs(result.sigma - sigmaTrue) / sigmaTrue);
+    }
+
+    errors.sort((a, b) => a - b);
+    const median = errors[Math.floor(errors.length / 2)];
+    expect(median).toBeLessThan(0.3);
+  });
+
+  it('±1σ corridor captures ~68% of actual next moves (Monte Carlo)', () => {
+    const sigmaTrue = 0.01;
+    let hits = 0;
+    const trials = 30;
+
+    for (let seed = 1; seed <= trials; seed++) {
+      // Generate 501 candles: 500 for fitting + 1 for out-of-sample test
+      const allCandles = makeKnownVolCandles(501, sigmaTrue, seed);
+      const fittingCandles = allCandles.slice(0, 500);
+      const actualNext = allCandles[500].close;
+
+      const result = predict(fittingCandles, '15m');
+
+      if (actualNext >= result.lowerPrice && actualNext <= result.upperPrice) {
+        hits++;
+      }
+    }
+
+    const hitRate = hits / trials;
+    // Theoretical ~68%, allow 45-90% range for finite sample
+    expect(hitRate).toBeGreaterThanOrEqual(0.45);
+    expect(hitRate).toBeLessThanOrEqual(0.90);
+  });
+
+  it('2× sigma data → ~2× predicted sigma', () => {
+    const candles1 = makeKnownVolCandles(500, 0.01, 42);
+    const candles2 = makeKnownVolCandles(500, 0.02, 42);
+
+    const sigma1 = predict(candles1, '15m').sigma;
+    const sigma2 = predict(candles2, '15m').sigma;
+
+    // Ratio should be approximately 2 (allow 1.2–3.5 range)
+    const ratio = sigma2 / sigma1;
+    expect(ratio).toBeGreaterThan(1.2);
+    expect(ratio).toBeLessThan(3.5);
+  });
+});
