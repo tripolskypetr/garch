@@ -179,11 +179,14 @@ sigma_t^2 = omega + alpha * epsilon_{t-1}^2 + beta * sigma_{t-1}^2
 - Stationarity constraint: **alpha + beta < 1**
 - Unconditional variance: **E[sigma^2] = omega / (1 - alpha - beta)**
 
-Parameter estimation via **Gaussian MLE** (maximum likelihood):
+Parameter estimation via **Student-t MLE** (maximum likelihood). The Student-t distribution captures fat tails observed in financial returns:
 
 ```
-LL = -0.5 * sum[ ln(sigma_t^2) + epsilon_t^2 / sigma_t^2 ]
+LL = n·[lnΓ((df+1)/2) - lnΓ(df/2) - 0.5·ln(π·(df-2))]
+     - 0.5 · sum[ ln(sigma_t^2) + (df+1)·ln(1 + r_t^2 / ((df-2)·sigma_t^2)) ]
 ```
+
+- **df** > 2 — degrees of freedom (estimated jointly with omega, alpha, beta via Nelder-Mead)
 
 Multi-step forecast converges to unconditional variance (E[RV] = sigma^2, so recursion is identical):
 
@@ -198,22 +201,27 @@ Exponential GARCH (Nelson, 1991). Models log-variance, capturing asymmetric vola
 **Candle[] input** — Realized EGARCH. Magnitude uses Parkinson RV, leverage keeps directional return:
 
 ```
-ln(sigma_t^2) = omega + alpha * (sqrt(RV_{t-1} / sigma_{t-1}^2) - sqrt(2/pi)) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
+ln(sigma_t^2) = omega + alpha * (sqrt(RV_{t-1} / sigma_{t-1}^2) - E[|Z|]) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
 ```
 
 **number[] input** — Classical EGARCH. Magnitude uses |z|:
 
 ```
-ln(sigma_t^2) = omega + alpha * (|z_{t-1}| - sqrt(2/pi)) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
+ln(sigma_t^2) = omega + alpha * (|z_{t-1}| - E[|Z|]) + gamma * z_{t-1} + beta * ln(sigma_{t-1}^2)
 ```
 
-Where **z_t = epsilon_t / sigma_t** is the standardized residual, **sqrt(2/pi) ~ 0.7979**.
+Where **z_t = epsilon_t / sigma_t** is the standardized residual and **E[|Z|]** is the expected absolute value of a standardized Student-t(df) variable:
+
+```
+E[|Z|] = sqrt((df-2)/pi) · Γ((df-1)/2) / Γ(df/2)
+```
 
 - **sqrt(RV/sigma^2)** is a more efficient estimate of |z| from OHLC data
 - **gamma** < 0 — leverage effect (negative returns increase vol more than positive)
 - No positivity constraints needed (log-variance is always real)
 - Stationarity: **|beta| < 1**
 - Unconditional variance: **E[sigma^2] ~ exp(omega / (1 - beta))**
+- **df** > 2 — degrees of freedom (estimated jointly via Nelder-Mead)
 
 ### GJR-GARCH(1,1)
 
@@ -237,6 +245,7 @@ Where **I(r<0) = 1** when return is negative, **0** otherwise.
 - **omega** > 0, **alpha** >= 0, **beta** >= 0
 - Stationarity: **alpha + gamma/2 + beta < 1** (half of innovations are negative on average)
 - Unconditional variance: **E[sigma^2] = omega / (1 - alpha - gamma/2 - beta)**
+- **df** > 2 — degrees of freedom (estimated jointly via Nelder-Mead)
 
 Multi-step forecast uses effective persistence = alpha + gamma/2 + beta:
 
@@ -268,6 +277,8 @@ Parameter estimation via **OLS** (closed-form, always converges):
 ```
 beta = (X'X)^{-1} X'y
 ```
+
+After OLS, **df** (degrees of freedom) is profiled via grid search over the Student-t log-likelihood with the OLS-fitted variance series.
 
 - Persistence: **beta_1 + beta_2 + beta_3 < 1** for stationarity
 - Unconditional variance: **E[RV] = beta_0 / (1 - beta_1 - beta_2 - beta_3)**
@@ -309,7 +320,7 @@ where **S** = skewness and **K** = kurtosis of {W_t}. For perfect normality D^2 
 - Default lags: **p = 10** (configurable)
 - Parkinson RV is less noisy than r², so Candle[] typically achieves lower D^2
 
-Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses Nelder-Mead for optimization.
+Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses Nelder-Mead for optimization. After fitting, **df** is profiled via grid search over the Student-t log-likelihood (same as HAR-RV).
 
 Multi-step forecast: replace future innovations with sigma^2 (since E[RV] = E[X^2] = sigma^2):
 
@@ -338,7 +349,7 @@ When given `Candle[]`, all five OHLC-aware models (GARCH, EGARCH, GJR-GARCH, HAR
 
 ### When Each Model Wins
 
-The library fits all five models on every call and picks the best by AIC. Here's what patterns in data favor each:
+The library fits all five models on every call and picks the best by AIC. All models use Student-t log-likelihood, which naturally accounts for fat tails in financial returns (low df = heavier tails). Here's what patterns in data favor each:
 
 - **GARCH** — Volatility spikes after any big move (up or down equally), then gradually fades back to normal. No difference between bullish and bearish shocks. Classic symmetric mean-reverting vol clustering.
 
@@ -368,6 +379,23 @@ sigma^2_GK = (1/n) * sum[ 0.5 * ln(H/L)^2 - (2*ln2 - 1) * ln(C/O)^2 ]
 
 ~5x more efficient than close-to-close variance.
 
+### Student-t Log-Likelihood
+
+All five models use a **Student-t** distribution for log-likelihood computation. Financial return series exhibit fat tails (excess kurtosis), and the Student-t captures this with an additional **degrees of freedom (df)** parameter:
+
+- **df ~ 3–10**: Heavy tails (common in crypto/equity returns)
+- **df ~ 20–50**: Mild excess kurtosis
+- **df → ∞**: Thin tails
+
+For GARCH, EGARCH, and GJR-GARCH, **df** is optimized jointly with the other parameters via Nelder-Mead. For HAR-RV and NoVaS, **df** is profiled via a two-pass grid search (coarse 2.5–50, then fine ±1 around the best) after the main optimization.
+
+Helper functions exported from the library:
+
+- `logGamma(x)` — Lanczos approximation (g=7, n=9), ~15-digit accuracy
+- `studentTNegLL(returns, varianceSeries, df)` — Full negative log-likelihood
+- `expectedAbsStudentT(df)` — E[|Z|] for standardized t(df), used in EGARCH centering
+- `profileStudentTDf(returns, varianceSeries)` — Grid search for optimal df
+
 ### Reliability Check
 
 The `reliable` flag in `PredictionResult` is `true` when all three conditions hold:
@@ -378,15 +406,16 @@ The `reliable` flag in `PredictionResult` is `true` when all three conditions ho
 
 ### Optimization
 
-GARCH/EGARCH/GJR-GARCH parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step). NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
+GARCH/EGARCH/GJR-GARCH parameters (including df) are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step) + df profiling. NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2 + df profiling. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
 
-For AIC comparison across all models, log-likelihoods are computed using the same Gaussian formulation over the return series:
+For AIC comparison across all models, log-likelihoods are computed using the Student-t formulation:
 
 ```
-LL = -0.5 * sum[ ln(sigma_t^2) + epsilon_t^2 / sigma_t^2 ]
+LL = n·[lnΓ((df+1)/2) - lnΓ(df/2) - 0.5·ln(π·(df-2))]
+     - 0.5 · sum[ ln(sigma_t^2) + (df+1)·ln(1 + r_t^2 / ((df-2)·sigma_t^2)) ]
 ```
 
-where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted variance, or NoVaS variance.
+where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted variance, or NoVaS variance. The df parameter adds 1 to numParams for each model (counted in AIC/BIC).
 
 ## Tests
 
@@ -399,7 +428,7 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
-| GJR-GARCH unit | `gjr-garch.test.ts` | 86 | Variance recursion (r² and Parkinson), indicator function I(r<0), forecast formula (one-step + multi-step), constraint barriers, computed fields, AIC/BIC numParams=4, estimation properties (perturbation, determinism), numerical stability, degenerate params, Realized path (Candle[] vs number[], flat candles, bad OHLC), options forwarding, immutability, instance isolation, cross-model consistency, scale invariance, property-based fuzz, predict/predictRange/backtest integration |
+| GJR-GARCH unit | `gjr-garch.test.ts` | 86 | Variance recursion (r² and Parkinson), indicator function I(r<0), forecast formula (one-step + multi-step), constraint barriers, computed fields, AIC/BIC numParams=5, estimation properties (perturbation, determinism), numerical stability, degenerate params, Realized path (Candle[] vs number[], flat candles, bad OHLC), options forwarding, immutability, instance isolation, cross-model consistency, scale invariance, property-based fuzz, predict/predictRange/backtest integration |
 | HAR-RV unit | `har.test.ts` | 138 | OLS regression, R^2, Parkinson RV proxy, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict, OLS orthogonality, TSS=RSS+ESS, normal equations, regression snapshots, mutation safety |
 | NoVaS unit | `novas.test.ts` | 109 | D^2 minimization, normality improvement, variance series, forecast convergence, edge cases, fuzz, integration with predict, determinism, scale invariance |
 | Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 16 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking |
