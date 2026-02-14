@@ -27,7 +27,7 @@ export function nelderMead(
   const simplex: number[][] = [x0.slice()];
   for (let i = 0; i < n; i++) {
     const point = x0.slice();
-    const delta = point[i] === 0 ? 0.00025 : point[i] * 0.05;
+    const delta = point[i] === 0 ? 0.00025 : point[i] * 0.20;
     point[i] += delta;
     simplex.push(point);
   }
@@ -132,4 +132,50 @@ function shrink(
     }
     values[i] = fn(simplex[i]);
   }
+}
+
+/**
+ * Multi-start Nelder-Mead: runs NM from multiple deterministic starting
+ * points and returns the best result. Escapes local minima by exploring
+ * different basins of attraction.
+ *
+ * Perturbation uses golden-ratio quasi-random sequence for uniform
+ * coverage of the search space without clustering.
+ */
+const PHI = (1 + Math.sqrt(5)) / 2; // golden ratio
+
+export function nelderMeadMultiStart(
+  fn: (x: number[]) => number,
+  x0: number[],
+  options: {
+    maxIter?: number;
+    tol?: number;
+    restarts?: number;
+  } = {}
+): OptimizerResult {
+  const { maxIter = 1000, tol = 1e-8, restarts = 3 } = options;
+  const n = x0.length;
+
+  // Run from original starting point
+  let best = nelderMead(fn, x0, { maxIter, tol });
+
+  // Run from perturbed starting points
+  for (let k = 1; k <= restarts; k++) {
+    const perturbed = new Array(n);
+    for (let i = 0; i < n; i++) {
+      // Quasi-random perturbation: golden-ratio sequence mapped to [-0.5, +0.5]
+      const frac = (k * (i + 1) * PHI) % 1;
+      const scale = frac - 0.5; // range [-0.5, +0.5]
+      perturbed[i] = x0[i] === 0
+        ? 0.001 * scale
+        : x0[i] * (1 + scale);
+    }
+
+    const result = nelderMead(fn, perturbed, { maxIter, tol });
+    if (result.fx < best.fx) {
+      best = result;
+    }
+  }
+
+  return best;
 }

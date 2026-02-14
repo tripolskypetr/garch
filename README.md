@@ -181,14 +181,14 @@ sigma_t^2 = omega + alpha * epsilon_{t-1}^2 + beta * sigma_{t-1}^2
 - Stationarity constraint: **alpha + beta < 1**
 - Unconditional variance: **E[sigma^2] = omega / (1 - alpha - beta)**
 
-Parameter estimation via **Student-t MLE** (maximum likelihood). The Student-t distribution captures fat tails observed in financial returns:
+Parameter estimation via **Student-t MLE** (maximum likelihood) with multi-start Nelder-Mead optimization. The Student-t distribution captures fat tails observed in financial returns:
 
 ```
 LL = n·[lnΓ((df+1)/2) - lnΓ(df/2) - 0.5·ln(π·(df-2))]
      - 0.5 · sum[ ln(sigma_t^2) + (df+1)·ln(1 + r_t^2 / ((df-2)·sigma_t^2)) ]
 ```
 
-- **df** > 2 — degrees of freedom (estimated jointly with omega, alpha, beta via Nelder-Mead)
+- **df** > 2 — degrees of freedom (estimated jointly with omega, alpha, beta via multi-start Nelder-Mead)
 
 Multi-step forecast converges to unconditional variance (E[RV] = sigma^2, so recursion is identical):
 
@@ -223,7 +223,7 @@ E[|Z|] = sqrt((df-2)/pi) · Γ((df-1)/2) / Γ(df/2)
 - No positivity constraints needed (log-variance is always real)
 - Stationarity: **|beta| < 1**
 - Unconditional variance: **E[sigma^2] ~ exp(omega / (1 - beta))**
-- **df** > 2 — degrees of freedom (estimated jointly via Nelder-Mead)
+- **df** > 2 — degrees of freedom (estimated jointly via multi-start Nelder-Mead)
 
 ### GJR-GARCH(1,1)
 
@@ -247,7 +247,7 @@ Where **I(r<0) = 1** when return is negative, **0** otherwise.
 - **omega** > 0, **alpha** >= 0, **beta** >= 0
 - Stationarity: **alpha + gamma/2 + beta < 1** (half of innovations are negative on average)
 - Unconditional variance: **E[sigma^2] = omega / (1 - alpha - gamma/2 - beta)**
-- **df** > 2 — degrees of freedom (estimated jointly via Nelder-Mead)
+- **df** > 2 — degrees of freedom (estimated jointly via multi-start Nelder-Mead)
 
 Multi-step forecast uses effective persistence = alpha + gamma/2 + beta:
 
@@ -322,7 +322,7 @@ where **S** = skewness and **K** = kurtosis of {W_t}. For perfect normality D^2 
 - Default lags: **p = 10** (configurable)
 - Parkinson RV is less noisy than r², so Candle[] typically achieves lower D^2
 
-Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses Nelder-Mead for optimization. After fitting, **df** is profiled via grid search over the Student-t log-likelihood (same as HAR-RV).
+Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses multi-start Nelder-Mead for optimization (6 restarts to escape local minima in the 11-dimensional D^2 landscape). After fitting, **df** is profiled via grid search over the Student-t log-likelihood (same as HAR-RV).
 
 After D^2 optimization, weights are **rescaled via OLS** on the realized variance series to minimize forecast error. This keeps NoVaS model-free (D^2 selects lag structure) while making it QLIKE-competitive with HAR-RV.
 
@@ -430,7 +430,17 @@ The `reliable` flag in `PredictionResult` is `true` when all three conditions ho
 
 ### Optimization
 
-GARCH/EGARCH/GJR-GARCH parameters (including df) are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step) + df profiling. NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2 + df profiling.
+GARCH/EGARCH/GJR-GARCH parameters (including df) are estimated via **multi-start Nelder-Mead** simplex method (derivative-free). Each model runs Nelder-Mead from multiple deterministic starting points (golden-ratio quasi-random perturbation) and keeps the best result — this escapes local minima that single-start NM would get stuck in, especially important for higher-dimensional problems like NoVaS (11 parameters).
+
+| Model | Parameters | Restarts | Total NM runs |
+|-------|-----------|----------|---------------|
+| GARCH | 4 (omega, alpha, beta, df) | 3 | 4 |
+| EGARCH | 5 (omega, alpha, gamma, beta, df) | 4 | 5 |
+| GJR-GARCH | 5 (omega, alpha, gamma, beta, df) | 4 | 5 |
+| NoVaS | p+1 (a_0...a_p, default p=10) | 6 | 7 |
+| HAR-RV | 4 (beta_0...beta_3) | — | OLS (closed-form) |
+
+Default per run: 1000 iterations (2000 for NoVaS D^2), tolerance 1e-8. Initial simplex uses 20% perturbation from x0 for broader exploration. HAR-RV uses **OLS** (exact solution in one step) + df profiling.
 
 Within the GARCH family, model comparison uses **AIC** (2k - 2LL) — fair since all three optimize the same Student-t LL objective. Across model families (GARCH vs HAR-RV vs NoVaS), comparison uses **QLIKE** (Patton, 2011):
 
@@ -442,7 +452,7 @@ where RV_t is Parkinson per-candle realized variance and sigma_t^2 is the model'
 
 ## Tests
 
-**919 tests** across **22 test files**. All passing.
+**923 tests** across **22 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
@@ -454,7 +464,7 @@ where RV_t is Parkinson per-candle realized variance and sigma_t^2 is the model'
 | GJR-GARCH unit | `gjr-garch.test.ts` | 86 | Variance recursion (r² and Parkinson), indicator function I(r<0), forecast formula (one-step + multi-step), constraint barriers, computed fields, AIC/BIC numParams=5, estimation properties (perturbation, determinism), numerical stability, degenerate params, Realized path (Candle[] vs number[], flat candles, bad OHLC), options forwarding, immutability, instance isolation, cross-model consistency, scale invariance, property-based fuzz, predict/predictRange/backtest integration |
 | HAR-RV unit | `har.test.ts` | 138 | OLS regression, R^2, Parkinson RV proxy, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict, OLS orthogonality, TSS=RSS+ESS, normal equations, regression snapshots, mutation safety |
 | NoVaS unit | `novas.test.ts` | 109 | D^2 minimization, normality improvement, variance series, forecast convergence, edge cases, fuzz, integration with predict, determinism, scale invariance |
-| Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 16 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking |
+| Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 20 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking, multi-start (Rastrigin escape, high-dimensional, equivalence) |
 | Statistical properties | `properties.test.ts` | 15 | Parameter recovery from synthetic data, local LL maximum, unconditional variance, GJR-GARCH forecast convergence and model selection |
 | Regression | `regression.test.ts` | 11 | Parameter recovery, deterministic outputs, cross-model consistency for GARCH/EGARCH/GJR-GARCH |
 | Stability | `stability.test.ts` | 12 | Long-term forecast behavior, variance convergence, GJR-GARCH near-constant and outlier handling |

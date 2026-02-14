@@ -1,5 +1,5 @@
 import type { Candle, GjrGarchParams, CalibrationResult, VolatilityForecast } from './types.js';
-import { nelderMead } from './optimizer.js';
+import { nelderMeadMultiStart } from './optimizer.js';
 import {
   calculateReturns,
   calculateReturnsFromPrices,
@@ -106,7 +106,7 @@ export class GjrGarch {
     const beta0 = 0.85;
     const df0 = 5;
 
-    const result = nelderMead(negLogLikelihood, [omega0, alpha0, gamma0, beta0, df0], { maxIter, tol });
+    const result = nelderMeadMultiStart(negLogLikelihood, [omega0, alpha0, gamma0, beta0, df0], { maxIter, tol, restarts: 4 });
 
     const [omega, alpha, gamma, beta, df] = result.x;
     const persistence = alpha + gamma / 2 + beta;

@@ -1,5 +1,5 @@
 import type { Candle, NoVaSParams, CalibrationResult, VolatilityForecast } from './types.js';
-import { nelderMead } from './optimizer.js';
+import { nelderMeadMultiStart } from './optimizer.js';
 import {
   calculateReturns,
   calculateReturnsFromPrices,
@@ -144,7 +144,7 @@ export class NoVaS {
       x0.push(0.9 * (1 - lambda) * Math.pow(lambda, j - 1));
     }
 
-    const result = nelderMead(objectiveD2, x0, { maxIter, tol });
+    const result = nelderMeadMultiStart(objectiveD2, x0, { maxIter, tol, restarts: 6 });
 
     // Extract final weights (abs for constraint enforcement)
     const weights = result.x.map(w => Math.abs(w));

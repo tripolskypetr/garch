@@ -1,5 +1,5 @@
 import type { Candle, EgarchParams, CalibrationResult, VolatilityForecast } from './types.js';
-import { nelderMead } from './optimizer.js';
+import { nelderMeadMultiStart } from './optimizer.js';
 import {
   calculateReturns,
   calculateReturnsFromPrices,
@@ -122,10 +122,10 @@ export class Egarch {
     const beta0 = 0.95;
     const df0 = 5;
 
-    const result = nelderMead(
+    const result = nelderMeadMultiStart(
       negLogLikelihood,
       [omega0, alpha0, gamma0, beta0, df0],
-      { maxIter, tol }
+      { maxIter, tol, restarts: 4 }
     );
 
     const [omega, alpha, gamma, beta, df] = result.x;

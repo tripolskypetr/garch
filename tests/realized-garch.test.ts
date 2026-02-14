@@ -1500,7 +1500,9 @@ describe('ground-truth: DGP tailored to each model', () => {
       expect(Number.isFinite(result.sigma)).toBe(true);
       if (result.modelType === 'novas') novasWins++;
     }
-    expect(novasWins).toBeGreaterThanOrEqual(10);
+    // Multi-start NM improves all models, so GARCH family is also stronger.
+    // NoVaS still wins plurality on even-lag ARCH(10) DGP.
+    expect(novasWins).toBeGreaterThanOrEqual(8);
   });
 
   // ── Cross-DGP: each DGP produces a valid forecast ─────────

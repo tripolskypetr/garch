@@ -1100,17 +1100,23 @@ describe('Realized EGARCH (Candle[] uses Parkinson magnitude)', () => {
   });
 
   it('Realized EGARCH preserves leverage effect (gamma sign)', () => {
-    // Create asymmetric candles where negative returns have higher vol
+    // Create candles with EGARCH-style leverage: negative shocks increase next-period vol
     const rng = lcg(77);
     const candles: Candle[] = [];
     let price = 100;
-    for (let i = 0; i < 300; i++) {
-      const u = rng();
-      // Negative returns are larger in magnitude → leverage
-      const r = u < 0.5 ? -(u * 0.06) : (u - 0.5) * 0.02;
+    let logVar = Math.log(0.0001);
+    const eAbsZ = Math.sqrt(2 / Math.PI);
+    for (let i = 0; i < 500; i++) {
+      const u1 = rng() || 1e-10;
+      const u2 = rng();
+      const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+      const vol = Math.exp(logVar / 2);
+      const r = vol * z;
+      // True EGARCH dynamics with strong leverage (gamma = -0.15)
+      logVar = -0.05 + 0.15 * (Math.abs(z) - eAbsZ) + (-0.15) * z + 0.95 * logVar;
       const close = price * Math.exp(r);
-      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.3);
-      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.3);
+      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.5);
+      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.5);
       candles.push({ open: price, high, low, close, volume: 1000 });
       price = close;
     }

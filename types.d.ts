@@ -530,6 +530,11 @@ declare function nelderMead(fn: (x: number[]) => number, x0: number[], options?:
     rho?: number;
     sigma?: number;
 }): OptimizerResult;
+declare function nelderMeadMultiStart(fn: (x: number[]) => number, x0: number[], options?: {
+    maxIter?: number;
+    tol?: number;
+    restarts?: number;
+}): OptimizerResult;
 
-export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, ljungBox, logGamma, nelderMead, perCandleParkinson, predict, predictRange, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTNegLL, yangZhangVariance };
+export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTNegLL, yangZhangVariance };
 export type { CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, GjrGarchOptions, GjrGarchParams, HarRvOptions, HarRvParams, LeverageStats, NoVaSOptions, NoVaSParams, OptimizerResult, PredictionResult, VolatilityForecast };

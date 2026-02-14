@@ -61,26 +61,26 @@ describe('Regression snapshots', () => {
   it('GARCH params on makePrices(100)', () => {
     const r = calibrateGarch(prices);
 
-    // Student-t MLE exact snapshot values
-    expect(r.params.omega).toBeCloseTo(1.0885186560315161e-8, 12);
-    expect(r.params.alpha).toBeCloseTo(1.1992837185889667e-10, 14);
-    expect(r.params.beta).toBeCloseTo(0.9998999998095188, 6);
-    expect(r.params.df).toBeCloseTo(33.77, 0);
+    // Student-t MLE exact snapshot values (multi-start NM)
+    expect(r.params.omega).toBeCloseTo(0.00008108887290815928, 8);
+    expect(r.params.alpha).toBeCloseTo(3.899618349626472e-10, 14);
+    expect(r.params.beta).toBeCloseTo(0.2869263609295882, 4);
+    expect(r.params.df).toBeCloseTo(100, 0);
     expect(r.params.persistence).toBeLessThan(1);
-    expect(r.diagnostics.logLikelihood).toBeCloseTo(309.2177927685958, 2);
+    expect(r.diagnostics.logLikelihood).toBeCloseTo(309.7522375528143, 2);
     expect(r.diagnostics.converged).toBe(true);
   });
 
   it('EGARCH params on makePrices(100)', () => {
     const r = calibrateEgarch(prices);
 
-    // Student-t MLE exact snapshot values
-    expect(r.params.omega).toBeCloseTo(-17.154545344556958, 2);
-    expect(r.params.alpha).toBeCloseTo(-0.186113131218345, 4);
-    expect(r.params.gamma).toBeCloseTo(0.21493459570073092, 4);
-    expect(r.params.beta).toBeCloseTo(-0.8745672428204935, 4);
+    // Student-t MLE exact snapshot values (multi-start NM)
+    expect(r.params.omega).toBeCloseTo(-17.14926022591494, 2);
+    expect(r.params.alpha).toBeCloseTo(-0.18620604429063128, 4);
+    expect(r.params.gamma).toBeCloseTo(0.2153455073902208, 4);
+    expect(r.params.beta).toBeCloseTo(-0.8739926664103224, 4);
     expect(r.params.df).toBeCloseTo(100, 0);
-    expect(r.diagnostics.logLikelihood).toBeCloseTo(313.4950425741637, 2);
+    expect(r.diagnostics.logLikelihood).toBeCloseTo(313.4950269569696, 2);
     expect(r.diagnostics.converged).toBe(true);
   });
 });

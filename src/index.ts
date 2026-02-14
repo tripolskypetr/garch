@@ -34,7 +34,7 @@ export {
 } from './predict.js';
 
 // Optimizer (for advanced usage)
-export { nelderMead } from './optimizer.js';
+export { nelderMead, nelderMeadMultiStart } from './optimizer.js';
 
 // Types
 export type {
