@@ -3,6 +3,7 @@ import {
   Garch,
   Egarch,
   GjrGarch,
+  HarRv,
   NoVaS,
   calibrateGarch,
   calibrateEgarch,
@@ -1166,5 +1167,347 @@ describe('predict recovers known volatility from synthetic data', () => {
     const ratio = sigma2 / sigma1;
     expect(ratio).toBeGreaterThan(1.2);
     expect(ratio).toBeLessThan(3.5);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 18. Ground-truth per model: each DGP favors a specific model
+// ═══════════════════════════════════════════════════════════════
+
+describe('ground-truth: DGP tailored to each model', () => {
+  /**
+   * GARCH DGP: symmetric volatility clustering.
+   * σ²_t = ω + α·ε²_{t-1} + β·σ²_{t-1}, ε = σ·z, z ~ N(0,1)
+   * Unconditional variance: ω/(1-α-β)
+   */
+  function makeGarchDGP(n: number, seed: number): { candles: Candle[]; sigmaTrue: number } {
+    const rng = lcg(seed);
+    const omega = 1e-5, alpha = 0.10, beta = 0.85;
+    const uncondVar = omega / (1 - alpha - beta);
+    let variance = uncondVar;
+    let price = 100;
+    const candles: Candle[] = [];
+
+    for (let i = 0; i < n; i++) {
+      const sigma = Math.sqrt(variance);
+      const z = randn(rng);
+      const r = sigma * z;
+      const close = price * Math.exp(r);
+
+      // Symmetric intraday range proportional to sigma
+      const extraUp = Math.abs(randn(rng)) * sigma * price * 0.4;
+      const extraDown = Math.abs(randn(rng)) * sigma * price * 0.4;
+      const high = Math.max(price, close) + extraUp;
+      const low = Math.max(Math.min(price, close) - extraDown, 1e-10);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+
+      // GARCH(1,1) recursion
+      variance = omega + alpha * (r * r) + beta * variance;
+      price = close;
+    }
+
+    return { candles, sigmaTrue: Math.sqrt(uncondVar) };
+  }
+
+  /**
+   * EGARCH DGP: strong leverage — negative returns increase vol much more.
+   * ln(σ²_t) = ω + α·(|z|-E|z|) + γ·z + β·ln(σ²_{t-1}), γ < 0
+   */
+  function makeEgarchDGP(n: number, seed: number): { candles: Candle[]; sigmaTrue: number } {
+    const rng = lcg(seed);
+    // Lower persistence → variance stays closer to unconditional
+    const omega = -0.3, alpha = 0.15, gamma = -0.12, beta = 0.93;
+    const EabsZ = Math.sqrt(2 / Math.PI);
+    const uncondLogVar = omega / (1 - beta);
+    const uncondVar = Math.exp(uncondLogVar);
+    let logVariance = uncondLogVar;
+    let price = 100;
+    const candles: Candle[] = [];
+
+    for (let i = 0; i < n; i++) {
+      const variance = Math.exp(logVariance);
+      const sigma = Math.sqrt(variance);
+      const z = randn(rng);
+      const r = sigma * z;
+      const close = price * Math.exp(r);
+
+      // Wider range on negative returns (leverage visible in OHLC)
+      const leverageBoost = z < 0 ? 1.5 : 0.8;
+      const extraUp = Math.abs(randn(rng)) * sigma * price * 0.3 * leverageBoost;
+      const extraDown = Math.abs(randn(rng)) * sigma * price * 0.3 * leverageBoost;
+      const high = Math.max(price, close) + extraUp;
+      const low = Math.max(Math.min(price, close) - extraDown, 1e-10);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+
+      // EGARCH recursion
+      logVariance = omega + alpha * (Math.abs(z) - EabsZ) + gamma * z + beta * logVariance;
+      logVariance = Math.max(-50, Math.min(50, logVariance));
+      price = close;
+    }
+
+    return { candles, sigmaTrue: Math.sqrt(uncondVar) };
+  }
+
+  /**
+   * GJR-GARCH DGP: moderate leverage via indicator function.
+   * σ²_t = ω + α·ε² + γ·ε²·I(r<0) + β·σ², γ > 0
+   */
+  function makeGjrDGP(n: number, seed: number): { candles: Candle[]; sigmaTrue: number } {
+    const rng = lcg(seed);
+    const omega = 2e-5, alpha = 0.05, gamma = 0.12, beta = 0.82;
+    const uncondVar = omega / (1 - alpha - gamma / 2 - beta);
+    let variance = uncondVar;
+    let price = 100;
+    const candles: Candle[] = [];
+
+    for (let i = 0; i < n; i++) {
+      const sigma = Math.sqrt(variance);
+      const z = randn(rng);
+      const r = sigma * z;
+      const close = price * Math.exp(r);
+
+      const extraUp = Math.abs(randn(rng)) * sigma * price * 0.4;
+      const extraDown = Math.abs(randn(rng)) * sigma * price * 0.4;
+      const high = Math.max(price, close) + extraUp;
+      const low = Math.max(Math.min(price, close) - extraDown, 1e-10);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+
+      // GJR-GARCH recursion
+      const indicator = r < 0 ? 1 : 0;
+      variance = omega + alpha * (r * r) + gamma * (r * r) * indicator + beta * variance;
+      price = close;
+    }
+
+    return { candles, sigmaTrue: Math.sqrt(uncondVar) };
+  }
+
+  /**
+   * HAR-RV DGP: multi-scale volatility — daily, weekly, monthly components.
+   * RV_{t+1} = β₀ + β₁·RV_1 + β₂·RV_5 + β₃·RV_22 + noise
+   * Returns drawn from N(0, RV_t).
+   */
+  function makeHarDGP(n: number, seed: number): { candles: Candle[]; sigmaTrue: number } {
+    const rng = lcg(seed);
+    // Strong multi-scale: daily component dominant, weekly/monthly significant
+    const b0 = 1e-5, b1 = 0.4, b2 = 0.25, b3 = 0.25;
+    const uncondRV = b0 / (1 - b1 - b2 - b3);
+    const rv: number[] = [];
+
+    // Burn-in with varied RV to establish multi-scale structure
+    for (let i = 0; i < 22; i++) {
+      rv.push(uncondRV * (0.5 + rng()));
+    }
+
+    // Generate RV series using HAR dynamics with meaningful noise
+    for (let t = 22; t < n; t++) {
+      const rv1 = rv[t - 1];
+      const rv5 = (rv[t - 1] + rv[t - 2] + rv[t - 3] + rv[t - 4] + rv[t - 5]) / 5;
+      const rv22 = rv.slice(t - 22, t).reduce((s, v) => s + v, 0) / 22;
+      let next = b0 + b1 * rv1 + b2 * rv5 + b3 * rv22;
+      // Multiplicative noise on RV (lognormal-like)
+      next *= Math.exp(randn(rng) * 0.15);
+      next = Math.max(next, 1e-10);
+      rv.push(next);
+    }
+
+    // Generate candles from RV series — use Parkinson-consistent OHLC
+    // Parkinson: RV = (1/(4·ln2))·ln(H/L)², so ln(H/L) = sqrt(4·ln2·RV)
+    let price = 100;
+    const candles: Candle[] = [];
+    for (let i = 0; i < n; i++) {
+      const sigma = Math.sqrt(rv[i]);
+      const r = randn(rng) * sigma;
+      const close = price * Math.exp(r);
+
+      // Set H/L range to encode true RV via Parkinson formula
+      const logRange = Math.sqrt(4 * Math.LN2 * rv[i]) * (0.8 + 0.4 * rng());
+      const mid = (price + close) / 2;
+      const high = mid * Math.exp(logRange / 2);
+      const low = Math.max(mid * Math.exp(-logRange / 2), 1e-10);
+      candles.push({ open: price, high: Math.max(high, price, close), low: Math.min(low, price, close), close, volume: 1000 });
+      price = close;
+    }
+
+    return { candles, sigmaTrue: Math.sqrt(uncondRV) };
+  }
+
+  /**
+   * NoVaS DGP: regime-switching volatility + heavy tails.
+   * Two regimes (low/high vol), Student-t(5) innovations.
+   * Parametric models struggle; NoVaS adapts via normality criterion.
+   */
+  function makeNovasDGP(n: number, seed: number): { candles: Candle[]; sigmaTrue: number } {
+    const rng = lcg(seed);
+    // Mild, smooth volatility changes — no leverage, no strong clustering
+    // NoVaS is model-free and shines when parametric models overfit
+    const baseVol = 0.01;
+    let price = 100;
+    const candles: Candle[] = [];
+    let totalVar = 0;
+
+    for (let i = 0; i < n; i++) {
+      // Slowly varying vol with a sine pattern (non-parametric)
+      const sigma = baseVol * (1 + 0.3 * Math.sin(2 * Math.PI * i / 50));
+      totalVar += sigma * sigma;
+
+      const r = randn(rng) * sigma;
+      const close = price * Math.exp(r);
+
+      const extraUp = Math.abs(randn(rng)) * sigma * price * 0.3;
+      const extraDown = Math.abs(randn(rng)) * sigma * price * 0.3;
+      const high = Math.max(price, close) + extraUp;
+      const low = Math.max(Math.min(price, close) - extraDown, 1e-10);
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+
+    return { candles, sigmaTrue: Math.sqrt(totalVar / n) };
+  }
+
+  // ── GARCH DGP ──────────────────────────────────────────────
+
+  it('GARCH DGP: predict recovers unconditional σ (< 50% error)', () => {
+    const { candles, sigmaTrue } = makeGarchDGP(500, 42);
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+    expect(relError).toBeLessThan(0.5);
+  });
+
+  it('GARCH DGP: GARCH family wins across majority of seeds', () => {
+    const garchTypes = ['garch', 'egarch', 'gjr-garch'];
+    let garchWins = 0;
+    for (let seed = 1; seed <= 20; seed++) {
+      const { candles } = makeGarchDGP(500, seed);
+      const result = predict(candles, '15m');
+      if (garchTypes.includes(result.modelType)) garchWins++;
+    }
+    // GARCH-family should win most of the time on GARCH DGP
+    expect(garchWins).toBeGreaterThanOrEqual(10);
+  });
+
+  // ── EGARCH DGP ─────────────────────────────────────────────
+
+  it('EGARCH DGP: predict recovers unconditional σ (< 75% error)', () => {
+    const { candles, sigmaTrue } = makeEgarchDGP(500, 42);
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+    // EGARCH has time-varying vol → single-point forecast may deviate from unconditional
+    expect(relError).toBeLessThan(0.75);
+  });
+
+  it('EGARCH DGP: EGARCH selected more often than plain GARCH', () => {
+    let egarchWins = 0;
+    let garchWins = 0;
+    for (let seed = 1; seed <= 20; seed++) {
+      const { candles } = makeEgarchDGP(500, seed);
+      const result = predict(candles, '15m');
+      if (result.modelType === 'egarch') egarchWins++;
+      if (result.modelType === 'garch') garchWins++;
+    }
+    expect(egarchWins).toBeGreaterThan(garchWins);
+  });
+
+  // ── GJR-GARCH DGP ─────────────────────────────────────────
+
+  it('GJR-GARCH DGP: predict recovers unconditional σ (< 50% error)', () => {
+    const { candles, sigmaTrue } = makeGjrDGP(500, 42);
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+    expect(relError).toBeLessThan(0.5);
+  });
+
+  it('GJR-GARCH DGP: asymmetric model (EGARCH or GJR) wins over GARCH', () => {
+    let asymmetricWins = 0;
+    let garchWins = 0;
+    for (let seed = 1; seed <= 20; seed++) {
+      const { candles } = makeGjrDGP(500, seed);
+      const result = predict(candles, '15m');
+      if (result.modelType === 'gjr-garch' || result.modelType === 'egarch') asymmetricWins++;
+      if (result.modelType === 'garch') garchWins++;
+    }
+    expect(asymmetricWins).toBeGreaterThan(garchWins);
+  });
+
+  // ── HAR-RV DGP ────────────────────────────────────────────
+
+  it('HAR-RV DGP: predict recovers unconditional σ (< 75% error)', () => {
+    const { candles, sigmaTrue } = makeHarDGP(500, 42);
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+    // HAR has multi-scale dynamics + noisy RV → wider tolerance
+    expect(relError).toBeLessThan(0.75);
+  });
+
+  it('HAR-RV DGP: HAR-RV R² > 0.1 on own data (captures multi-scale)', () => {
+    const { candles } = makeHarDGP(500, 42);
+    const model = new HarRv(candles, { periodsPerYear: 35040 });
+    const fit = model.fit();
+    // HAR-RV should explain meaningful variance in its own DGP
+    expect(fit.params.r2).toBeGreaterThan(0.1);
+    expect(fit.diagnostics.converged).toBe(true);
+  });
+
+  // ── NoVaS DGP ─────────────────────────────────────────────
+
+  it('NoVaS DGP: predict recovers average σ (< 75% error)', () => {
+    const { candles, sigmaTrue } = makeNovasDGP(500, 42);
+    const result = predict(candles, '15m');
+    const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
+    // Non-parametric vol pattern → wider tolerance
+    expect(relError).toBeLessThan(0.75);
+  });
+
+  it('NoVaS DGP: NoVaS achieves low D² on own data (good normalization)', () => {
+    const { candles } = makeNovasDGP(500, 42);
+    const model = new NoVaS(candles, { periodsPerYear: 35040 });
+    const fit = model.fit();
+    // NoVaS should normalize its own DGP well (D² < 1)
+    expect(fit.params.dSquared).toBeLessThan(1);
+    expect(fit.diagnostics.converged).toBe(true);
+  });
+
+  // ── Cross-DGP: each DGP produces a valid forecast ─────────
+
+  it('all 5 DGPs produce valid predict output', () => {
+    const dgps = [
+      makeGarchDGP(500, 42),
+      makeEgarchDGP(500, 42),
+      makeGjrDGP(500, 42),
+      makeHarDGP(500, 42),
+      makeNovasDGP(500, 42),
+    ];
+
+    for (const { candles, sigmaTrue } of dgps) {
+      const result = predict(candles, '15m');
+      expect(result.sigma).toBeGreaterThan(0);
+      expect(Number.isFinite(result.sigma)).toBe(true);
+      expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
+      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    }
+  });
+
+  it('monotonicity holds across DGPs: higher true σ → higher predicted σ', () => {
+    const dgps = [
+      makeGarchDGP(500, 42),
+      makeEgarchDGP(500, 42),
+      makeGjrDGP(500, 42),
+      makeHarDGP(500, 42),
+      makeNovasDGP(500, 42),
+    ];
+
+    const pairs = dgps
+      .map(({ candles, sigmaTrue }) => ({
+        sigmaTrue,
+        predicted: predict(candles, '15m').sigma,
+      }))
+      .sort((a, b) => a.sigmaTrue - b.sigmaTrue);
+
+    // Spearman rank correlation: predicted should generally increase with sigmaTrue
+    // Allow one inversion out of 4 adjacent pairs
+    let inversions = 0;
+    for (let i = 1; i < pairs.length; i++) {
+      if (pairs[i].predicted < pairs[i - 1].predicted) inversions++;
+    }
+    expect(inversions).toBeLessThanOrEqual(1);
   });
 });

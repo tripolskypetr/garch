@@ -378,7 +378,7 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 
 ## Tests
 
-**899 tests** across **22 test files**. All passing.
+**911 tests** across **22 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
