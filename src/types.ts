@@ -51,6 +51,17 @@ export interface LeverageStats {
   recommendation: 'garch' | 'egarch';
 }
 
+export interface HarRvParams {
+  beta0: number;
+  betaShort: number;
+  betaMedium: number;
+  betaLong: number;
+  persistence: number;
+  unconditionalVariance: number;
+  annualizedVol: number;
+  r2: number;
+}
+
 export interface OptimizerResult {
   x: number[];
   fx: number;

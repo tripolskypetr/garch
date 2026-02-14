@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>Missing GARCH/EGARCH forecast for NodeJS</strong><br>
-  GARCH and EGARCH volatility models for TypeScript. Zero dependencies.
+  <strong>Missing GARCH/EGARCH/HAR-RV forecast for NodeJS</strong><br>
+  GARCH, EGARCH and HAR-RV volatility models for TypeScript. Zero dependencies.
 </p>
 
 ## Installation
@@ -17,7 +17,7 @@ npm install garch
 
 ### `predict(candles, interval, currentPrice?)`
 
-Forecast expected price range for the next candle (t+1). Auto-selects GARCH or EGARCH based on leverage effect. Returns a +-1 sigma price corridor.
+Forecast expected price range for the next candle (t+1). Auto-selects GARCH, EGARCH or HAR-RV based on leverage effect and AIC comparison. Returns a +-1 sigma price corridor.
 
 ```typescript
 import { predict } from 'garch';
@@ -57,7 +57,7 @@ interface PredictionResult {
   move: number;                   // +/- price move = currentPrice * sigma
   upperPrice: number;             // currentPrice + move
   lowerPrice: number;             // currentPrice - move
-  modelType: 'garch' | 'egarch'; // Auto-selected model
+  modelType: 'garch' | 'egarch' | 'har-rv'; // Auto-selected model
   reliable: boolean;              // Quality flag (convergence + persistence + Ljung-Box)
 }
 ```
@@ -196,13 +196,48 @@ Where **z_t = epsilon_t / sigma_t** is the standardized residual, **sqrt(2/pi) ~
 - Stationarity: **|beta| < 1**
 - Unconditional variance: **E[sigma^2] ~ exp(omega / (1 - beta))**
 
+### HAR-RV
+
+Heterogeneous Autoregressive model of Realized Variance (Corsi, 2009). Captures multi-scale volatility clustering via three overlapping horizons:
+
+```
+RV_{t+1} = beta_0 + beta_1 * RV_short + beta_2 * RV_medium + beta_3 * RV_long + epsilon
+```
+
+Where **RV_t = r_t^2** (squared return as realized variance proxy):
+
+- **RV_short** = mean(RV_t) — last 1 period (default)
+- **RV_medium** = mean(RV_{t-4} ... RV_t) — last 5 periods
+- **RV_long** = mean(RV_{t-21} ... RV_t) — last 22 periods
+
+Parameter estimation via **OLS** (closed-form, always converges):
+
+```
+beta = (X'X)^{-1} X'y
+```
+
+- Persistence: **beta_1 + beta_2 + beta_3 < 1** for stationarity
+- Unconditional variance: **E[RV] = beta_0 / (1 - beta_1 - beta_2 - beta_3)**
+- **R^2** measures explained variance in the regression
+
+Multi-step forecast via iterative substitution: each predicted RV feeds back into the rolling components for subsequent steps.
+
 ### Model Auto-Selection
 
-`predict` and `predictRange` automatically choose between GARCH and EGARCH:
+`predict` and `predictRange` fit two pipelines in parallel and pick the winner by AIC:
 
-1. Compute volatility of negative returns vs. positive returns
-2. If ratio > 1.2 — use EGARCH (significant leverage effect detected)
-3. Otherwise — use simpler GARCH
+1. **GARCH-family pipeline**: compute leverage ratio (negative vol / positive vol). If ratio > 1.2 — fit EGARCH, otherwise fit GARCH
+2. **HAR-RV pipeline**: fit HAR-RV via OLS. Skip if persistence >= 1 or R^2 < 0
+3. Compare AIC of both pipelines. Lower AIC wins
+
+```
+fitModel()
+  |-- fitGarchFamily() --> GARCH or EGARCH --> AIC_1
+  |-- fitHarRv()       --> HAR-RV (OLS)    --> AIC_2
+  \-- return min(AIC_1, AIC_2)
+```
+
+HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). GARCH/EGARCH tends to win on data with pronounced shock reactions or leverage effects.
 
 ### Variance Estimators
 
@@ -232,11 +267,19 @@ The `reliable` flag in `PredictionResult` is `true` when all three conditions ho
 
 ### Optimization
 
-Parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
+GARCH/EGARCH parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step). Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
+
+For AIC comparison between GARCH-family and HAR-RV, both log-likelihoods are computed using the same Gaussian formulation over the return series:
+
+```
+LL = -0.5 * sum[ ln(sigma_t^2) + epsilon_t^2 / sigma_t^2 ]
+```
+
+where sigma_t^2 comes from either the GARCH conditional variance or the HAR-RV fitted variance.
 
 ## Tests
 
-**400 tests** across **17 test files**. All passing.
+**467 tests** across **18 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
@@ -244,6 +287,7 @@ Parameters are estimated via **Nelder-Mead** simplex method (derivative-free). D
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
+| HAR-RV unit | `har.test.ts` | 67 | OLS regression, R^2, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict |
 | Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 16 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking |
 | Statistical properties | `properties.test.ts` | 13 | Parameter recovery from synthetic data, local LL maximum, unconditional variance |
 | Regression | `regression.test.ts` | 9 | Parameter recovery, deterministic outputs |

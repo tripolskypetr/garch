@@ -1,6 +1,7 @@
 import type { Candle, VolatilityForecast } from './types.js';
 import { Garch } from './garch.js';
 import { Egarch } from './egarch.js';
+import { HarRv } from './har.js';
 import { calculateReturnsFromPrices, checkLeverageEffect, ljungBox } from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
@@ -37,7 +38,7 @@ export interface PredictionResult {
   move: number;
   upperPrice: number;
   lowerPrice: number;
-  modelType: 'garch' | 'egarch';
+  modelType: 'garch' | 'egarch' | 'har-rv';
   reliable: boolean;
 }
 
@@ -50,14 +51,14 @@ function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
 
 interface FitResult {
   forecast: VolatilityForecast;
-  modelType: 'garch' | 'egarch';
+  modelType: 'garch' | 'egarch' | 'har-rv';
   converged: boolean;
   persistence: number;
   varianceSeries: number[];
   returns: number[];
 }
 
-function fitModel(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
+function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number): FitResult & { aic: number } {
   const returns = calculateReturnsFromPrices(candles.map(c => c.close));
   const leverage = checkLeverageEffect(returns);
 
@@ -71,6 +72,7 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
       persistence: fit.params.persistence,
       varianceSeries: model.getVarianceSeries(fit.params),
       returns: model.getReturns(),
+      aic: fit.diagnostics.aic,
     };
   }
 
@@ -83,7 +85,42 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
     persistence: fit.params.persistence,
     varianceSeries: model.getVarianceSeries(fit.params),
     returns: model.getReturns(),
+    aic: fit.diagnostics.aic,
   };
+}
+
+function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): (FitResult & { aic: number }) | null {
+  try {
+    const model = new HarRv(candles, { periodsPerYear });
+    const fit = model.fit();
+
+    // Skip HAR-RV if persistence >= 1 (non-stationary) or R² too low
+    if (fit.params.persistence >= 1 || fit.params.r2 < 0) return null;
+
+    return {
+      forecast: model.forecast(fit.params, steps),
+      modelType: 'har-rv',
+      converged: fit.diagnostics.converged,
+      persistence: fit.params.persistence,
+      varianceSeries: model.getVarianceSeries(fit.params),
+      returns: model.getReturns(),
+      aic: fit.diagnostics.aic,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function fitModel(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
+  const garchResult = fitGarchFamily(candles, periodsPerYear, steps);
+  const harResult = fitHarRv(candles, periodsPerYear, steps);
+
+  // Pick model with lower AIC (better fit)
+  if (harResult && harResult.aic < garchResult.aic) {
+    return harResult;
+  }
+
+  return garchResult;
 }
 
 function checkReliable(fit: FitResult): boolean {

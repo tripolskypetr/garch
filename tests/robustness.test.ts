@@ -28,7 +28,7 @@ function assertSaneResult(result: ReturnType<typeof predict>, label: string) {
   expect(result.sigma, `${label}: sigma > 0`).toBeGreaterThanOrEqual(0);
   expect(result.upperPrice, `${label}: upper > lower`).toBeGreaterThan(result.lowerPrice);
   expect(typeof result.reliable, `${label}: reliable is boolean`).toBe('boolean');
-  expect(['garch', 'egarch'], `${label}: valid modelType`).toContain(result.modelType);
+  expect(['garch', 'egarch', 'har-rv'], `${label}: valid modelType`).toContain(result.modelType);
 }
 
 // ── 1. Flash crash — single candle drops 50% ────────────────
