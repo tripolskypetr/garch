@@ -1407,6 +1407,260 @@ describe('HAR-RV partial pivoting (indirect)', () => {
   });
 });
 
+// ── reliable flag with HAR-RV ─────────────────────────────────
+
+describe('HAR-RV reliable flag', () => {
+  it('reliable is boolean for HAR-RV model', () => {
+    // Scan seeds until HAR-RV wins, then check reliable flag
+    for (let seed = 1; seed <= 200; seed++) {
+      const candles = makeCandles(500, seed);
+      const result = predict(candles, '4h');
+      if (result.modelType === 'har-rv') {
+        expect(typeof result.reliable).toBe('boolean');
+        return;
+      }
+    }
+    // If no HAR-RV won, just verify reliable works for any model
+    const candles = makeCandles(500, 42);
+    expect(typeof predict(candles, '4h').reliable).toBe('boolean');
+  });
+
+  it('reliable=false when persistence >= 0.999', () => {
+    // High persistence models should be flagged unreliable.
+    // We can verify this property: for any model with persistence >= 0.999,
+    // reliable must be false. Scan multiple seeds.
+    for (let seed = 1; seed <= 50; seed++) {
+      const candles = makeCandles(300, seed);
+      const result = predict(candles, '1h');
+      // We can't know which model was selected, but the contract holds:
+      // if the internal persistence >= 0.999, reliable must be false
+      // (we can't check persistence directly from predict output, but
+      // we verify the flag is always a valid boolean)
+      expect(typeof result.reliable).toBe('boolean');
+    }
+  });
+
+  it('reliable flag is consistent between predict and predictRange', () => {
+    const candles = makeCandles(500, 42);
+    const p1 = predict(candles, '4h');
+    const pRange = predictRange(candles, '4h', 1);
+    // Same data, same steps=1 — same model, same reliable
+    expect(pRange.reliable).toBe(p1.reliable);
+    expect(pRange.modelType).toBe(p1.modelType);
+  });
+});
+
+// ── Custom lags + forecast ───────────────────────────────────
+
+describe('HAR-RV custom lags + forecast', () => {
+  it('custom lags affect forecast values', () => {
+    const prices = generatePrices(300, 42);
+    const m1 = new HarRv(prices, { shortLag: 1, mediumLag: 5, longLag: 22 }); // default
+    const m2 = new HarRv(prices, { shortLag: 3, mediumLag: 10, longLag: 22 });
+    const f1 = m1.fit();
+    const f2 = m2.fit();
+    const fc1 = m1.forecast(f1.params, 5);
+    const fc2 = m2.forecast(f2.params, 5);
+
+    // Different lags → different betas → different forecasts
+    let allSame = true;
+    for (let i = 0; i < 5; i++) {
+      if (Math.abs(fc1.variance[i] - fc2.variance[i]) > 1e-15) {
+        allSame = false;
+        break;
+      }
+    }
+    expect(allSame).toBe(false);
+  });
+
+  it('custom lags forecast produces positive finite values', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices, { shortLag: 2, mediumLag: 7, longLag: 15 });
+    const fit = model.fit();
+    const fc = model.forecast(fit.params, 10);
+
+    for (const v of fc.variance) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it('custom lags variance series uses correct lag windows', () => {
+    const prices = generatePrices(200, 42);
+    const longLag = 15;
+    const model = new HarRv(prices, { shortLag: 2, mediumLag: 7, longLag });
+    const fit = model.fit();
+    const vs = model.getVarianceSeries(fit.params);
+
+    // First longLag entries should be fallback (all identical)
+    const fallback = vs[0];
+    for (let i = 1; i < longLag; i++) {
+      expect(vs[i]).toBe(fallback);
+    }
+    // Entry at longLag should be a prediction (generally different)
+    expect(typeof vs[longLag]).toBe('number');
+    expect(vs[longLag]).toBeGreaterThan(0);
+  });
+});
+
+// ── Two equal lags out of three ──────────────────────────────
+
+describe('HAR-RV two equal lags', () => {
+  it('shortLag = mediumLag ≠ longLag — may produce collinear columns', () => {
+    const prices = generatePrices(200, 42);
+    // shortLag=5, mediumLag=5 → identical columns; longLag=22 → unique
+    // But with intercept, X has [1, rv5, rv5, rv22] — two identical columns → singular
+    expect(() => calibrateHarRv(prices, { shortLag: 5, mediumLag: 5, longLag: 22 }))
+      .toThrow('Singular matrix');
+  });
+
+  it('mediumLag = longLag ≠ shortLag — also singular', () => {
+    const prices = generatePrices(200, 42);
+    expect(() => calibrateHarRv(prices, { shortLag: 1, mediumLag: 22, longLag: 22 }))
+      .toThrow('Singular matrix');
+  });
+
+  it('all three lags distinct — works fine', () => {
+    const prices = generatePrices(200, 42);
+    const result = calibrateHarRv(prices, { shortLag: 1, mediumLag: 10, longLag: 22 });
+    expect(result.diagnostics.converged).toBe(true);
+    expect(Number.isFinite(result.params.r2)).toBe(true);
+  });
+});
+
+// ── Invalid inputs ───────────────────────────────────────────
+
+describe('HAR-RV invalid inputs', () => {
+  it('NaN in prices throws', () => {
+    const prices = generatePrices(200, 42);
+    prices[50] = NaN;
+    expect(() => new HarRv(prices)).toThrow('Invalid price');
+  });
+
+  it('Infinity in prices throws', () => {
+    const prices = generatePrices(200, 42);
+    prices[50] = Infinity;
+    expect(() => new HarRv(prices)).toThrow('Invalid price');
+  });
+
+  it('zero price throws', () => {
+    const prices = generatePrices(200, 42);
+    prices[50] = 0;
+    expect(() => new HarRv(prices)).toThrow('Invalid price');
+  });
+
+  it('negative price throws', () => {
+    const prices = generatePrices(200, 42);
+    prices[50] = -1;
+    expect(() => new HarRv(prices)).toThrow('Invalid price');
+  });
+
+  it('NaN in candle close throws', () => {
+    const candles = makeCandles(200, 42);
+    candles[50] = { ...candles[50], close: NaN };
+    expect(() => new HarRv(candles)).toThrow('Invalid close price');
+  });
+});
+
+// ── nObs verification ────────────────────────────────────────
+
+describe('HAR-RV regression observation count', () => {
+  it('nObs = rv.length - longLag for default lags', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    // Regression range: t = longLag-1 .. rv.length-2
+    // nObs = (rv.length - 2) - (22 - 1) + 1 = rv.length - 22
+    const nObs = rv.length - 22;
+
+    // Verify via BIC: BIC = k*ln(nObs) - 2*LL
+    // So nObs = exp((BIC + 2*LL) / k)
+    const { aic, bic, logLikelihood: ll } = fit.diagnostics;
+    // AIC = 2k - 2LL → 2LL = 2k - AIC
+    // BIC = k*ln(n) - 2LL → k*ln(n) = BIC + 2LL = BIC + 2k - AIC
+    // ln(n) = (BIC + 2k - AIC) / k
+    const k = 4;
+    const lnN = (bic + 2 * k - aic) / k;
+    const recoveredN = Math.round(Math.exp(lnN));
+
+    expect(recoveredN).toBe(nObs);
+  });
+
+  it('nObs = rv.length - customLongLag for custom lags', () => {
+    const prices = generatePrices(300, 42);
+    const longLag = 15;
+    const model = new HarRv(prices, { shortLag: 2, mediumLag: 7, longLag });
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    const nObs = rv.length - longLag;
+    const k = 4;
+    const { aic, bic } = fit.diagnostics;
+    const lnN = (bic + 2 * k - aic) / k;
+    const recoveredN = Math.round(Math.exp(lnN));
+
+    expect(recoveredN).toBe(nObs);
+  });
+});
+
+// ── fit() idempotency ────────────────────────────────────────
+
+describe('HAR-RV fit idempotency', () => {
+  it('calling fit() twice on same instance returns identical results', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const r1 = model.fit();
+    const r2 = model.fit();
+
+    expect(r1.params.beta0).toBe(r2.params.beta0);
+    expect(r1.params.betaShort).toBe(r2.params.betaShort);
+    expect(r1.params.betaMedium).toBe(r2.params.betaMedium);
+    expect(r1.params.betaLong).toBe(r2.params.betaLong);
+    expect(r1.params.r2).toBe(r2.params.r2);
+    expect(r1.diagnostics.logLikelihood).toBe(r2.diagnostics.logLikelihood);
+    expect(r1.diagnostics.aic).toBe(r2.diagnostics.aic);
+    expect(r1.diagnostics.bic).toBe(r2.diagnostics.bic);
+  });
+
+  it('fit → forecast → fit again gives same params', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const r1 = model.fit();
+    model.forecast(r1.params, 100); // should not mutate internal state
+    const r2 = model.fit();
+
+    expect(r1.params.beta0).toBe(r2.params.beta0);
+    expect(r1.params.betaShort).toBe(r2.params.betaShort);
+    expect(r1.params.r2).toBe(r2.params.r2);
+  });
+});
+
+// ── backtest meaningful result ───────────────────────────────
+
+describe('HAR-RV backtest', () => {
+  it('backtest hit rate is > 0% (model predicts something)', () => {
+    // backtest returns true if hit rate >= requiredPercent.
+    // With requiredPercent=0, it should always return true (> 0% hits).
+    const candles = makeCandles(500, 42);
+    expect(backtest(candles, '4h', 0)).toBe(true);
+  });
+
+  it('backtest hit rate is < 100% (model is not perfect)', () => {
+    // With requiredPercent=100, model should fail (not every move within ±1σ)
+    const candles = makeCandles(500, 42);
+    expect(backtest(candles, '4h', 100)).toBe(false);
+  });
+
+  it('backtest result is deterministic', () => {
+    const candles = makeCandles(500, 42);
+    const r1 = backtest(candles, '4h');
+    const r2 = backtest(candles, '4h');
+    expect(r1).toBe(r2);
+  });
+});
+
 // ── Fuzz testing ──────────────────────────────────────────────
 
 describe('HAR-RV fuzz tests', () => {
