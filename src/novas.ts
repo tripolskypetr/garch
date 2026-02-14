@@ -4,6 +4,7 @@ import {
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,
+  perCandleParkinson,
   calculateAIC,
   calculateBIC,
 } from './utils.js';
@@ -37,6 +38,7 @@ const DEFAULT_LAGS = 10;
  */
 export class NoVaS {
   private returns: number[];
+  private rv: number[] | null;
   private periodsPerYear: number;
   private lags: number;
 
@@ -52,8 +54,12 @@ export class NoVaS {
 
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
+      this.rv = null;
     } else {
-      this.returns = calculateReturns(data as Candle[]);
+      const candles = data as Candle[];
+      this.returns = calculateReturns(candles);
+      // Parkinson (1980) per-candle RV: ~5× more efficient than r²
+      this.rv = perCandleParkinson(candles, this.returns);
     }
   }
 
@@ -68,8 +74,8 @@ export class NoVaS {
     const p = this.lags;
     const initVar = sampleVariance(returns);
 
-    // Squared returns (precomputed)
-    const r2 = returns.map(r => r * r);
+    // Innovation: Parkinson RV for candles, r² for prices
+    const r2 = this.rv ?? returns.map(r => r * r);
 
     /**
      * Compute D² for a given weight vector.
@@ -188,7 +194,7 @@ export class NoVaS {
   private getVarianceSeriesInternal(weights: number[]): number[] {
     const { returns, lags } = this;
     const n = returns.length;
-    const r2 = returns.map(r => r * r);
+    const r2 = this.rv ?? returns.map(r => r * r);
     const fallback = sampleVariance(returns);
     const series: number[] = [];
 
@@ -222,9 +228,9 @@ export class NoVaS {
    */
   forecast(params: NoVaSParams, steps: number = 1): VolatilityForecast {
     const { weights, lags } = params;
-    const r2 = this.returns.map(r => r * r);
+    const r2 = this.rv ?? this.returns.map(r => r * r);
 
-    // Working buffer: past r² values + forecasted variances
+    // Working buffer: past innovation values + forecasted variances
     const history = r2.slice();
     const variance: number[] = [];
 

@@ -2,8 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
   Garch,
   Egarch,
+  NoVaS,
   calibrateGarch,
   calibrateEgarch,
+  calibrateNoVaS,
   perCandleParkinson,
   predict,
   predictRange,
@@ -639,5 +641,133 @@ describe('predictRange with Candle[] (Realized path)', () => {
     // Cumulative σ should grow (more steps = wider range)
     expect(r5.sigma).toBeGreaterThan(r1.sigma);
     expect(r20.sigma).toBeGreaterThan(r5.sigma);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 15. REALIZED NoVaS (Candle[] → Parkinson RV)
+// ═══════════════════════════════════════════════════════════════
+
+describe('Realized NoVaS (Candle[] uses Parkinson RV)', () => {
+  it('Candle[] and number[] produce different NoVaS params', () => {
+    const candles = makeCandles(200, 42);
+    const prices = candles.map(c => c.close);
+
+    const resultCandles = calibrateNoVaS(candles);
+    const resultPrices = calibrateNoVaS(prices);
+
+    expect(resultCandles.diagnostics.converged).toBe(true);
+    expect(resultPrices.diagnostics.converged).toBe(true);
+
+    // Weights should differ because Candle[] uses Parkinson RV
+    let weightDiff = 0;
+    for (let i = 0; i < resultCandles.params.weights.length; i++) {
+      weightDiff += Math.abs(resultCandles.params.weights[i] - resultPrices.params.weights[i]);
+    }
+    expect(weightDiff).toBeGreaterThan(1e-10);
+  });
+
+  it('flat candles (H=L) degrade to classical NoVaS (r² fallback)', () => {
+    const candles = makeFlatCandles(200, 42);
+    const result = calibrateNoVaS(candles);
+
+    expect(result.diagnostics.converged).toBe(true);
+    expect(result.params.persistence).toBeLessThan(1);
+  });
+
+  it('Realized NoVaS variance series all positive and finite', () => {
+    const candles = makeCandles(200, 42);
+    const model = new NoVaS(candles);
+    const fit = model.fit();
+    const vs = model.getVarianceSeries(fit.params);
+
+    for (const v of vs) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it('Realized NoVaS 1-step forecast uses Parkinson RV as innovation', () => {
+    const candles = makeCandles(200, 42);
+    const model = new NoVaS(candles);
+    const fit = model.fit();
+    const { weights, lags } = fit.params;
+
+    // Compute expected 1-step forecast manually using Parkinson RV
+    const returns = model.getReturns();
+    const rv = perCandleParkinson(candles, returns);
+    const n = rv.length;
+
+    let expected = weights[0];
+    for (let j = 1; j <= lags; j++) {
+      expected += weights[j] * rv[n - j];
+    }
+
+    const fc = model.forecast(fit.params, 1);
+    expect(fc.variance[0]).toBeCloseTo(expected, 12);
+  });
+
+  it('Realized NoVaS forecast converges', () => {
+    const candles = makeCandles(200, 42);
+    const model = new NoVaS(candles);
+    const fit = model.fit();
+
+    if (fit.params.persistence < 0.999) {
+      const fc = model.forecast(fit.params, 200);
+      const lastVar = fc.variance[199];
+      const uncond = fit.params.unconditionalVariance;
+      const relError = Math.abs(lastVar - uncond) / uncond;
+      expect(relError).toBeLessThan(0.01);
+    }
+  });
+
+  it('Realized NoVaS scale invariance — 1000× prices → same weights', () => {
+    const candles1 = makeCandles(200, 42);
+    const candles2 = candles1.map(c => ({
+      open: c.open * 1000,
+      high: c.high * 1000,
+      low: c.low * 1000,
+      close: c.close * 1000,
+      volume: c.volume,
+    }));
+
+    const r1 = calibrateNoVaS(candles1);
+    const r2 = calibrateNoVaS(candles2);
+
+    // Log returns and Parkinson are scale-invariant
+    expect(r1.params.persistence).toBeCloseTo(r2.params.persistence, 4);
+    for (let i = 1; i < r1.params.weights.length; i++) {
+      expect(r1.params.weights[i]).toBeCloseTo(r2.params.weights[i], 6);
+    }
+  });
+
+  it('Realized NoVaS across multiple seeds — always valid', () => {
+    for (let seed = 1; seed <= 10; seed++) {
+      const candles = makeCandles(200, seed);
+      const result = calibrateNoVaS(candles);
+
+      expect(result.params.persistence).toBeLessThan(1);
+      expect(result.params.weights[0]).toBeGreaterThan(0);
+      expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
+    }
+  });
+
+  it('D² with Candle[] should be <= D² with number[] (or close)', () => {
+    // Parkinson RV is less noisy → normalization should be at least as good
+    let candleWins = 0;
+    const seeds = 10;
+    for (let seed = 1; seed <= seeds; seed++) {
+      const candles = makeCandles(200, seed);
+      const prices = candles.map(c => c.close);
+
+      const rc = calibrateNoVaS(candles);
+      const rp = calibrateNoVaS(prices);
+
+      if (rc.params.dSquared <= rp.params.dSquared + 0.01) {
+        candleWins++;
+      }
+    }
+    // Candle[] should win or tie in most cases
+    expect(candleWins).toBeGreaterThanOrEqual(5);
   });
 });

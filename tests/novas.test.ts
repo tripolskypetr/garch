@@ -410,17 +410,23 @@ describe('NoVaS', () => {
   // ── Input equivalence ──────────────────────────────────────
 
   describe('input equivalence', () => {
-    it('Candle[] and number[] (close prices) produce identical results', () => {
+    it('Candle[] and number[] produce different results (Parkinson vs r²)', () => {
       const candles = makeCandles(300, 42);
       const prices = candles.map(c => c.close);
 
       const resultCandles = calibrateNoVaS(candles);
       const resultPrices = calibrateNoVaS(prices);
 
+      // Candle[] uses Parkinson RV, number[] uses r² — weights should differ
+      let weightDiff = 0;
       for (let i = 0; i < resultCandles.params.weights.length; i++) {
-        expect(resultCandles.params.weights[i]).toBe(resultPrices.params.weights[i]);
+        weightDiff += Math.abs(resultCandles.params.weights[i] - resultPrices.params.weights[i]);
       }
-      expect(resultCandles.params.dSquared).toBe(resultPrices.params.dSquared);
+      expect(weightDiff).toBeGreaterThan(1e-10);
+
+      // Both should converge
+      expect(resultCandles.diagnostics.converged).toBe(true);
+      expect(resultPrices.diagnostics.converged).toBe(true);
     });
 
     it('periodsPerYear does NOT affect weights or dSquared', () => {
