@@ -831,3 +831,72 @@ describe('Realized NoVaS (Candle[] uses Parkinson RV)', () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════
+// 16. NoVaS fallback — predict falls back to GARCH when NoVaS fails
+// ═══════════════════════════════════════════════════════════════
+
+describe('predict fallback when NoVaS fails', () => {
+  it('near-constant candles: predict returns valid result (NoVaS may fail)', () => {
+    // Near-constant prices make NoVaS optimization degenerate,
+    // but predict should still return a valid result via GARCH fallback
+    const rng = lcg(42);
+    const candles: Candle[] = [];
+    let price = 100;
+    for (let i = 0; i < 200; i++) {
+      const r = randn(rng) * 1e-12; // near-zero returns
+      const close = price + r;
+      candles.push({
+        open: price,
+        high: Math.max(price, close) + 1e-13,
+        low: Math.min(price, close) - 1e-13,
+        close,
+        volume: 1000,
+      });
+      price = close;
+    }
+
+    const result = predict(candles, '4h');
+    expect(result).toBeDefined();
+    expect(Number.isFinite(result.sigma)).toBe(true);
+    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+  });
+
+  it('predict always returns a valid modelType across 20 seeds', () => {
+    const validTypes = ['garch', 'egarch', 'har-rv', 'novas'];
+    for (let seed = 1; seed <= 20; seed++) {
+      const candles = makeCandles(200, seed);
+      const result = predict(candles, '4h');
+
+      expect(validTypes).toContain(result.modelType);
+      expect(result.sigma).toBeGreaterThan(0);
+      expect(Number.isFinite(result.sigma)).toBe(true);
+      expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
+    }
+  });
+
+  it('predictRange also falls back gracefully', () => {
+    // Flat candles: Parkinson RV = 0, NoVaS degrades
+    const candles = makeFlatCandles(200, 42);
+    const result = predictRange(candles, '4h', 5);
+
+    expect(result).toBeDefined();
+    expect(result.sigma).toBeGreaterThan(0);
+    expect(Number.isFinite(result.sigma)).toBe(true);
+    expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
+  });
+
+  it('GARCH family is always the guaranteed fallback', () => {
+    // Even with pathological data, fitGarchFamily never returns null,
+    // so predict must always produce a result
+    const candles = makeCandles(200, 42);
+    const result = predict(candles, '4h');
+
+    // The result must come from one of the four models
+    expect(['garch', 'egarch', 'har-rv', 'novas']).toContain(result.modelType);
+    // Forecast corridor must be well-formed
+    expect(result.move).toBeGreaterThanOrEqual(0);
+    expect(result.upperPrice).toBeCloseTo(result.currentPrice + result.move, 8);
+    expect(result.lowerPrice).toBeCloseTo(result.currentPrice - result.move, 8);
+  });
+});

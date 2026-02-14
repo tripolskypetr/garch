@@ -349,7 +349,7 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 
 ## Tests
 
-**760 tests** across **21 test files**. All passing.
+**764 tests** across **21 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
@@ -365,7 +365,7 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 | Regression | `regression.test.ts` | 9 | Parameter recovery, deterministic outputs |
 | Stability | `stability.test.ts` | 10 | Long-term forecast behavior, variance convergence |
 | Robustness | `robustness.test.ts` | 53 | Extreme moves, stress scenarios |
-| Realized models | `realized-garch.test.ts` | 48 | Candle[] vs number[] for GARCH/EGARCH/NoVaS, Parkinson RV edge cases, flat candles, extreme H/L, scale invariance, all-identical OHLC, minimum-length boundary, D² comparison |
+| Realized models | `realized-garch.test.ts` | 52 | Candle[] vs number[] for GARCH/EGARCH/NoVaS, Parkinson RV edge cases, flat candles, extreme H/L, scale invariance, all-identical OHLC, minimum-length boundary, D² comparison, predict fallback when NoVaS fails |
 | Edge cases | `edge-cases.test.ts`, `coverage-gaps*.test.ts` | 148 | Insufficient data, near-unit-root, zero returns, constant prices, negative prices, overflow/underflow, trending data, 10K+ data points |
 | Miscellaneous | `misc.test.ts` | 12 | Integration scenarios, different intervals |
 
