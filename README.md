@@ -378,7 +378,7 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 
 ## Tests
 
-**778 tests** across **21 test files**. All passing.
+**892 tests** across **22 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
@@ -387,16 +387,17 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
+| GJR-GARCH unit | `gjr-garch.test.ts` | 86 | Variance recursion (r² and Parkinson), indicator function I(r<0), forecast formula (one-step + multi-step), constraint barriers, computed fields, AIC/BIC numParams=4, estimation properties (perturbation, determinism), numerical stability, degenerate params, Realized path (Candle[] vs number[], flat candles, bad OHLC), options forwarding, immutability, instance isolation, cross-model consistency, scale invariance, property-based fuzz, predict/predictRange/backtest integration |
 | HAR-RV unit | `har.test.ts` | 138 | OLS regression, R^2, Parkinson RV proxy, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict, OLS orthogonality, TSS=RSS+ESS, normal equations, regression snapshots, mutation safety |
 | NoVaS unit | `novas.test.ts` | 109 | D^2 minimization, normality improvement, variance series, forecast convergence, edge cases, fuzz, integration with predict, determinism, scale invariance |
 | Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 16 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking |
-| Statistical properties | `properties.test.ts` | 13 | Parameter recovery from synthetic data, local LL maximum, unconditional variance |
-| Regression | `regression.test.ts` | 9 | Parameter recovery, deterministic outputs |
-| Stability | `stability.test.ts` | 10 | Long-term forecast behavior, variance convergence |
+| Statistical properties | `properties.test.ts` | 15 | Parameter recovery from synthetic data, local LL maximum, unconditional variance, GJR-GARCH forecast convergence and model selection |
+| Regression | `regression.test.ts` | 11 | Parameter recovery, deterministic outputs, cross-model consistency for GARCH/EGARCH/GJR-GARCH |
+| Stability | `stability.test.ts` | 12 | Long-term forecast behavior, variance convergence, GJR-GARCH near-constant and outlier handling |
 | Robustness | `robustness.test.ts` | 53 | Extreme moves, stress scenarios |
-| Realized models | `realized-garch.test.ts` | 52 | Candle[] vs number[] for GARCH/EGARCH/NoVaS, Parkinson RV edge cases, flat candles, extreme H/L, scale invariance, all-identical OHLC, minimum-length boundary, D² comparison, predict fallback when NoVaS fails |
-| Edge cases | `edge-cases.test.ts`, `coverage-gaps*.test.ts` | 148 | Insufficient data, near-unit-root, zero returns, constant prices, negative prices, overflow/underflow, trending data, 10K+ data points |
-| Miscellaneous | `misc.test.ts` | 12 | Integration scenarios, different intervals |
+| Realized models | `realized-garch.test.ts` | 64 | Candle[] vs number[] for GARCH/EGARCH/GJR-GARCH/NoVaS, Parkinson RV edge cases, flat candles, extreme H/L, scale invariance, all-identical OHLC, minimum-length boundary, D² comparison, predict fallback when NoVaS fails |
+| Edge cases | `edge-cases.test.ts`, `coverage-gaps*.test.ts` | 157 | Insufficient data, near-unit-root, zero returns, constant prices, negative prices, overflow/underflow, trending data, 10K+ data points, GJR-GARCH immutability and instance isolation |
+| Miscellaneous | `misc.test.ts` | 13 | Integration scenarios, different intervals, immutability |
 
 ```bash
 npm test        # run all tests
