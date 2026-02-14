@@ -18,7 +18,7 @@ npm install garch
 
 ### `predict(candles, interval, currentPrice?)`
 
-Forecast expected price range for the next candle (t+1). Auto-selects the best model (GARCH, EGARCH, GJR-GARCH, HAR-RV or NoVaS) by AIC comparison. Returns a +-1 sigma price corridor.
+Forecast expected price range for the next candle (t+1). Auto-selects the best model (GARCH, EGARCH, GJR-GARCH, HAR-RV or NoVaS) by QLIKE forecast-error comparison. Returns a +-1 sigma price corridor.
 
 ```typescript
 import { predict } from 'garch';
@@ -330,26 +330,33 @@ sigma_{t+h}^2 = a_0 + sum_j a_j * E[innovation_{t+h-j}]
 
 ### Model Auto-Selection
 
-`predict` and `predictRange` fit all five models and pick the winner by AIC — no heuristics or hardcoded thresholds:
-
-1. **GARCH-family pipeline**: fit all three — GARCH, EGARCH, GJR-GARCH — and return the one with lowest AIC
-2. **HAR-RV pipeline**: fit HAR-RV via OLS. Skip if persistence >= 1 or R^2 < 0
-3. **NoVaS pipeline**: fit NoVaS via D^2 minimization. Skip if persistence >= 1
-4. Compare AIC across all pipelines. Lowest AIC wins
+`predict` and `predictRange` fit all five models and pick the winner by **QLIKE** (Patton, 2011) — a neutral forecast-error metric that judges how well each model's variance series predicts realized variance:
 
 ```
-fitModel()
-  |-- fitGarchFamily() --> min(GARCH, EGARCH, GJR-GARCH)  --> AIC_1
-  |-- fitHarRv()       --> HAR-RV (OLS)                    --> AIC_2
-  |-- fitNoVaS()       --> NoVaS (D²)                      --> AIC_3
-  \-- return min(AIC_1, AIC_2, AIC_3)
+QLIKE = (1/n) · sum[ RV_t / sigma_t^2 - ln(RV_t / sigma_t^2) - 1 ]
+```
+
+Lower QLIKE = better forecast. Unlike AIC (which favors MLE-calibrated models), QLIKE is neutral to calibration method — OLS, D^2-minimization, and MLE all compete on equal footing.
+
+1. **GARCH-family pipeline**: fit GARCH, EGARCH, GJR-GARCH — pick best by AIC (fair since all three optimize Student-t LL)
+2. **HAR-RV pipeline**: fit HAR-RV via OLS. Skip if persistence >= 1 or R^2 < 0
+3. **NoVaS pipeline**: fit NoVaS via D^2 minimization. Skip if persistence >= 1
+4. Compute Parkinson RV from candles. Score each pipeline's variance series by QLIKE. Lowest QLIKE wins
+
+```
+fitModel(candles)
+  |-- fitGarchFamily() --> min_AIC(GARCH, EGARCH, GJR-GARCH) --> QLIKE_1
+  |-- fitHarRv()       --> HAR-RV (OLS)                       --> QLIKE_2
+  |-- fitNoVaS()       --> NoVaS (D²)                         --> QLIKE_3
+  |-- rv = perCandleParkinson(candles)
+  \-- return min(QLIKE_1, QLIKE_2, QLIKE_3)
 ```
 
 When given `Candle[]`, all five OHLC-aware models (GARCH, EGARCH, GJR-GARCH, HAR-RV, NoVaS) use Parkinson per-candle RV instead of squared returns, extracting ~5× more information from the same data.
 
 ### When Each Model Wins
 
-The library fits all five models on every call and picks the best by AIC. All models use Student-t log-likelihood, which naturally accounts for fat tails in financial returns (low df = heavier tails). Here's what patterns in data favor each:
+The library fits all five models on every call and picks the best by QLIKE. Each model uses its own calibration method (MLE, OLS, or D^2) but they all compete on the same forecast-error metric. Here's what patterns in data favor each:
 
 - **GARCH** — Volatility spikes after any big move (up or down equally), then gradually fades back to normal. No difference between bullish and bearish shocks. Classic symmetric mean-reverting vol clustering.
 
@@ -395,6 +402,7 @@ Helper functions exported from the library:
 - `studentTNegLL(returns, varianceSeries, df)` — Full negative log-likelihood
 - `expectedAbsStudentT(df)` — E[|Z|] for standardized t(df), used in EGARCH centering
 - `profileStudentTDf(returns, varianceSeries)` — Grid search for optimal df
+- `qlike(varianceSeries, rv)` — QLIKE loss (Patton, 2011) for volatility forecast evaluation
 
 ### Reliability Check
 
@@ -406,16 +414,15 @@ The `reliable` flag in `PredictionResult` is `true` when all three conditions ho
 
 ### Optimization
 
-GARCH/EGARCH/GJR-GARCH parameters (including df) are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step) + df profiling. NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2 + df profiling. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
+GARCH/EGARCH/GJR-GARCH parameters (including df) are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step) + df profiling. NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2 + df profiling.
 
-For AIC comparison across all models, log-likelihoods are computed using the Student-t formulation:
+Within the GARCH family, model comparison uses **AIC** (2k - 2LL) — fair since all three optimize the same Student-t LL objective. Across model families (GARCH vs HAR-RV vs NoVaS), comparison uses **QLIKE** (Patton, 2011):
 
 ```
-LL = n·[lnΓ((df+1)/2) - lnΓ(df/2) - 0.5·ln(π·(df-2))]
-     - 0.5 · sum[ ln(sigma_t^2) + (df+1)·ln(1 + r_t^2 / ((df-2)·sigma_t^2)) ]
+QLIKE = (1/n) · sum[ RV_t / sigma_t^2 - ln(RV_t / sigma_t^2) - 1 ]
 ```
 
-where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted variance, or NoVaS variance. The df parameter adds 1 to numParams for each model (counted in AIC/BIC).
+where RV_t is Parkinson per-candle realized variance and sigma_t^2 is the model's fitted conditional variance. QLIKE is the standard loss function for volatility forecast evaluation — it is neutral to calibration method (MLE, OLS, D^2 all compete fairly).
 
 ## Tests
 
@@ -423,11 +430,11 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
-| Mathematical formulas | `math.test.ts` | 45 | GARCH/EGARCH variance recursion, log-likelihood, forecast formulas, AIC/BIC, Yang-Zhang, Garman-Klass, Ljung-Box, chi-squared |
+| Mathematical formulas | `math.test.ts` | 45 | GARCH/EGARCH variance recursion, log-likelihood, forecast formulas, AIC/BIC, QLIKE, Yang-Zhang, Garman-Klass, Ljung-Box, chi-squared |
 | Math coverage | `math-coverage.test.ts` | 79 | Parkinson formula verification, rv↔returns alignment, H=L fallback, Parkinson-based forecast, candle validation, reliable flag cascade, backtest validity, numerical precision, cross-model consistency, Realized GARCH/EGARCH/GJR-GARCH Candle[] vs number[], perCandleParkinson shared function |
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
-| EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
+| EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison |
 | GJR-GARCH unit | `gjr-garch.test.ts` | 86 | Variance recursion (r² and Parkinson), indicator function I(r<0), forecast formula (one-step + multi-step), constraint barriers, computed fields, AIC/BIC numParams=5, estimation properties (perturbation, determinism), numerical stability, degenerate params, Realized path (Candle[] vs number[], flat candles, bad OHLC), options forwarding, immutability, instance isolation, cross-model consistency, scale invariance, property-based fuzz, predict/predictRange/backtest integration |
 | HAR-RV unit | `har.test.ts` | 138 | OLS regression, R^2, Parkinson RV proxy, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict, OLS orthogonality, TSS=RSS+ESS, normal equations, regression snapshots, mutation safety |
 | NoVaS unit | `novas.test.ts` | 109 | D^2 minimization, normality improvement, variance series, forecast convergence, edge cases, fuzz, integration with predict, determinism, scale invariance |
@@ -436,7 +443,7 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 | Regression | `regression.test.ts` | 11 | Parameter recovery, deterministic outputs, cross-model consistency for GARCH/EGARCH/GJR-GARCH |
 | Stability | `stability.test.ts` | 12 | Long-term forecast behavior, variance convergence, GJR-GARCH near-constant and outlier handling |
 | Robustness | `robustness.test.ts` | 53 | Extreme moves, stress scenarios |
-| Realized models | `realized-garch.test.ts` | 71 | Candle[] vs number[] for GARCH/EGARCH/GJR-GARCH/NoVaS, Parkinson RV edge cases, flat candles, extreme H/L, scale invariance, all-identical OHLC, minimum-length boundary, D² comparison, predict fallback, **ground-truth volatility recovery** (see below) |
+| Realized models | `realized-garch.test.ts` | 83 | Candle[] vs number[] for GARCH/EGARCH/GJR-GARCH/NoVaS, Parkinson RV edge cases, flat candles, extreme H/L, scale invariance, all-identical OHLC, minimum-length boundary, D² comparison, predict fallback, **ground-truth volatility recovery** (see below) |
 | Edge cases | `edge-cases.test.ts`, `coverage-gaps*.test.ts` | 157 | Insufficient data, near-unit-root, zero returns, constant prices, negative prices, overflow/underflow, trending data, 10K+ data points, GJR-GARCH immutability and instance isolation |
 | Miscellaneous | `misc.test.ts` | 13 | Integration scenarios, different intervals, immutability |
 

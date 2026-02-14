@@ -21,6 +21,7 @@ export {
   expectedAbsStudentT,
   studentTNegLL,
   profileStudentTDf,
+  qlike,
 } from './utils.js';
 
 // Prediction

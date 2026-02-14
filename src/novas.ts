@@ -142,41 +142,10 @@ export class NoVaS {
       x0.push(0.9 * (1 - lambda) * Math.pow(lambda, j - 1));
     }
 
-    const d2Result = nelderMead(objectiveD2, x0, { maxIter, tol });
-    const d2Weights = d2Result.x.map(w => Math.abs(w));
-    const dSquared = d2Result.fx;
+    const result = nelderMead(objectiveD2, x0, { maxIter, tol });
 
-    // Stage 2: MLE refinement — optimize Student-t LL directly
-    // Use generic initial values (not D² weights) for better LL starting point
-    const self = this;
-    function negLogLikelihood(params: number[]): number {
-      const w = params.slice(0, p + 1).map(v => Math.abs(v));
-      const df = params[p + 1];
-      if (w[0] < 1e-15) return 1e10;
-      if (df <= 2.01 || df > 100) return 1e10;
-
-      let lagSum = 0;
-      for (let j = 1; j <= p; j++) lagSum += w[j];
-      if (lagSum >= 0.9999) return 1e10;
-
-      const varSeries = self.getVarianceSeriesInternal(w);
-      return studentTNegLL(returns, varSeries, df);
-    }
-
-    const mleX0: number[] = [initVar * 0.1];
-    for (let j = 1; j <= p; j++) {
-      mleX0.push(0.9 * (1 - lambda) * Math.pow(lambda, j - 1));
-    }
-    mleX0.push(5); // df
-
-    const mleResult = nelderMead(
-      negLogLikelihood,
-      mleX0,
-      { maxIter, tol },
-    );
-
-    const weights = mleResult.x.slice(0, p + 1).map(w => Math.abs(w));
-    const df = Math.max(2.01, Math.min(100, mleResult.x[p + 1]));
+    // Extract final weights (abs for constraint enforcement)
+    const weights = result.x.map(w => Math.abs(w));
 
     let persistence = 0;
     for (let j = 1; j <= p; j++) persistence += weights[j];
@@ -186,9 +155,13 @@ export class NoVaS {
       : sampleVariance(returns);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
-    const ll = -mleResult.fx;
+    // Student-t log-likelihood for AIC comparison with GARCH/EGARCH/HAR-RV
+    const varianceSeries = this.getVarianceSeriesInternal(weights);
+    const df = profileStudentTDf(returns, varianceSeries);
+    const ll = -studentTNegLL(returns, varianceSeries, df);
+
     const numParams = p + 2; // weights + df
-    const nObs = n - p; // usable observations
+    const nObs = n - p; // usable observations for D²
 
     return {
       params: {
@@ -197,15 +170,15 @@ export class NoVaS {
         persistence,
         unconditionalVariance,
         annualizedVol,
-        dSquared,
+        dSquared: result.fx,
         df,
       },
       diagnostics: {
         logLikelihood: ll,
         aic: calculateAIC(ll, numParams),
         bic: calculateBIC(ll, numParams, nObs),
-        iterations: d2Result.iterations + mleResult.iterations,
-        converged: d2Result.converged, // D² is primary objective; MLE refines for AIC
+        iterations: result.iterations,
+        converged: result.converged,
       },
     };
   }

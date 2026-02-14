@@ -1,5 +1,4 @@
 import type { Candle, HarRvParams, CalibrationResult, VolatilityForecast } from './types.js';
-import { nelderMead } from './optimizer.js';
 import {
   calculateReturns,
   calculateReturnsFromPrices,
@@ -178,15 +177,9 @@ export class HarRv {
   }
 
   /**
-   * Calibrate HAR-RV via OLS + Student-t MLE refinement.
-   *
-   * Stage 1: OLS on RV_{t+1} = β₀ + β₁·RV_short + β₂·RV_medium + β₃·RV_long
-   * Stage 2: Nelder-Mead refines betas + df to maximize Student-t log-likelihood
-   *
-   * This ensures HAR-RV competes fairly with GARCH family on AIC.
+   * Calibrate HAR-RV via OLS.
    */
-  fit(options: { maxIter?: number; tol?: number } = {}): CalibrationResult<HarRvParams> {
-    const { maxIter = 1000, tol = 1e-8 } = options;
+  fit(): CalibrationResult<HarRvParams> {
     const { rv, shortLag, mediumLag, longLag } = this;
     const n = rv.length;
 
@@ -207,30 +200,8 @@ export class HarRv {
       y.push(rv[t + 1]);
     }
 
-    // Stage 1: OLS for initial estimates
-    const olsResult = ols(X, y);
-
-    // Stage 2: MLE refinement — optimize Student-t LL directly
-    // Use generic initial values (not OLS betas) to avoid flat LL surface
-    const returns = this.returns;
-    const initVar = sampleVariance(returns);
-
-    const self = this;
-    function negLogLikelihood(params: number[]): number {
-      const beta = params.slice(0, 4);
-      const df = params[4];
-      if (df <= 2.01 || df > 100) return 1e10;
-      const varSeries = self.getVarianceSeriesInternal(beta);
-      return studentTNegLL(returns, varSeries, df);
-    }
-
-    const mleResult = nelderMead(
-      negLogLikelihood,
-      [initVar * 0.05, 0.1, 0.3, 0.5, 5],
-      { maxIter, tol },
-    );
-
-    const [beta0, betaShort, betaMedium, betaLong, df] = mleResult.x;
+    const result = ols(X, y);
+    const [beta0, betaShort, betaMedium, betaLong] = result.beta;
 
     const persistence = betaShort + betaMedium + betaLong;
     const unconditionalVariance = persistence < 1 && persistence > -1
@@ -238,7 +209,11 @@ export class HarRv {
       : sampleVariance(this.returns);
     const annualizedVol = Math.sqrt(Math.abs(unconditionalVariance) * this.periodsPerYear) * 100;
 
-    const ll = -mleResult.fx;
+    // Student-t log-likelihood on returns using HAR-RV fitted variances
+    const varianceSeries = this.getVarianceSeriesInternal(result.beta);
+    const df = profileStudentTDf(this.returns, varianceSeries);
+    const ll = -studentTNegLL(this.returns, varianceSeries, df);
+
     const numParams = 5; // beta0, betaShort, betaMedium, betaLong, df
 
     return {
@@ -250,15 +225,15 @@ export class HarRv {
         persistence,
         unconditionalVariance,
         annualizedVol,
-        r2: olsResult.r2,
+        r2: result.r2,
         df,
       },
       diagnostics: {
         logLikelihood: ll,
         aic: calculateAIC(ll, numParams),
         bic: calculateBIC(ll, numParams, nObs),
-        iterations: mleResult.iterations + 1,
-        converged: mleResult.converged,
+        iterations: 1,
+        converged: true,
       },
     };
   }
@@ -350,8 +325,8 @@ export class HarRv {
  */
 export function calibrateHarRv(
   data: Candle[] | number[],
-  options: HarRvOptions & { maxIter?: number; tol?: number } = {},
+  options: HarRvOptions = {},
 ): CalibrationResult<HarRvParams> {
   const model = new HarRv(data, options);
-  return model.fit(options);
+  return model.fit();
 }

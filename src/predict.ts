@@ -4,7 +4,7 @@ import { Egarch } from './egarch.js';
 import { GjrGarch } from './gjr-garch.js';
 import { HarRv } from './har.js';
 import { NoVaS } from './novas.js';
-import { ljungBox } from './utils.js';
+import { ljungBox, calculateReturns, perCandleParkinson, qlike } from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
 
@@ -66,50 +66,52 @@ interface FitResult {
   returns: number[];
 }
 
-function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number): FitResult & { aic: number } {
+function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
   // Fit all three GARCH-family models and pick the best by AIC
+  // (AIC is fair here — all three optimize the same Student-t LL)
   const garchModel = new Garch(candles, { periodsPerYear });
   const garchFit = garchModel.fit();
-  let best: FitResult & { aic: number } = {
+  let bestAic = garchFit.diagnostics.aic;
+  let best: FitResult = {
     forecast: garchModel.forecast(garchFit.params, steps),
     modelType: 'garch',
     converged: garchFit.diagnostics.converged,
     persistence: garchFit.params.persistence,
     varianceSeries: garchModel.getVarianceSeries(garchFit.params),
     returns: garchModel.getReturns(),
-    aic: garchFit.diagnostics.aic,
   };
 
   const egarchModel = new Egarch(candles, { periodsPerYear });
   const egarchFit = egarchModel.fit();
-  const egarchResult: FitResult & { aic: number } = {
-    forecast: egarchModel.forecast(egarchFit.params, steps),
-    modelType: 'egarch',
-    converged: egarchFit.diagnostics.converged,
-    persistence: egarchFit.params.persistence,
-    varianceSeries: egarchModel.getVarianceSeries(egarchFit.params),
-    returns: egarchModel.getReturns(),
-    aic: egarchFit.diagnostics.aic,
-  };
-  if (egarchResult.aic < best.aic) best = egarchResult;
+  if (egarchFit.diagnostics.aic < bestAic) {
+    bestAic = egarchFit.diagnostics.aic;
+    best = {
+      forecast: egarchModel.forecast(egarchFit.params, steps),
+      modelType: 'egarch',
+      converged: egarchFit.diagnostics.converged,
+      persistence: egarchFit.params.persistence,
+      varianceSeries: egarchModel.getVarianceSeries(egarchFit.params),
+      returns: egarchModel.getReturns(),
+    };
+  }
 
   const gjrModel = new GjrGarch(candles, { periodsPerYear });
   const gjrFit = gjrModel.fit();
-  const gjrResult: FitResult & { aic: number } = {
-    forecast: gjrModel.forecast(gjrFit.params, steps),
-    modelType: 'gjr-garch',
-    converged: gjrFit.diagnostics.converged,
-    persistence: gjrFit.params.persistence,
-    varianceSeries: gjrModel.getVarianceSeries(gjrFit.params),
-    returns: gjrModel.getReturns(),
-    aic: gjrFit.diagnostics.aic,
-  };
-  if (gjrResult.aic < best.aic) best = gjrResult;
+  if (gjrFit.diagnostics.aic < bestAic) {
+    best = {
+      forecast: gjrModel.forecast(gjrFit.params, steps),
+      modelType: 'gjr-garch',
+      converged: gjrFit.diagnostics.converged,
+      persistence: gjrFit.params.persistence,
+      varianceSeries: gjrModel.getVarianceSeries(gjrFit.params),
+      returns: gjrModel.getReturns(),
+    };
+  }
 
   return best;
 }
 
-function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): (FitResult & { aic: number }) | null {
+function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): FitResult | null {
   try {
     const model = new HarRv(candles, { periodsPerYear });
     const fit = model.fit();
@@ -124,40 +126,31 @@ function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): (Fi
       persistence: fit.params.persistence,
       varianceSeries: model.getVarianceSeries(fit.params),
       returns: model.getReturns(),
-      aic: fit.diagnostics.aic,
     };
   } catch {
     return null;
   }
 }
 
-function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): (FitResult & { aic: number }) | null {
-  // Lag order selection by AIC — standard practice in time series modeling
-  let best: (FitResult & { aic: number }) | null = null;
+function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): FitResult | null {
+  try {
+    const model = new NoVaS(candles, { periodsPerYear });
+    const fit = model.fit();
 
-  for (const lags of [2, 5, 10]) {
-    try {
-      const model = new NoVaS(candles, { periodsPerYear, lags });
-      const fit = model.fit();
-      if (fit.params.persistence >= 1) continue;
+    // Skip if persistence >= 1 (non-stationary)
+    if (fit.params.persistence >= 1) return null;
 
-      const result: FitResult & { aic: number } = {
-        forecast: model.forecast(fit.params, steps),
-        modelType: 'novas',
-        converged: fit.diagnostics.converged,
-        persistence: fit.params.persistence,
-        varianceSeries: model.getVarianceSeries(fit.params),
-        returns: model.getReturns(),
-        aic: fit.diagnostics.aic,
-      };
-
-      if (!best || result.aic < best.aic) best = result;
-    } catch {
-      // continue to next lag configuration
-    }
+    return {
+      forecast: model.forecast(fit.params, steps),
+      modelType: 'novas',
+      converged: fit.diagnostics.converged,
+      persistence: fit.params.persistence,
+      varianceSeries: model.getVarianceSeries(fit.params),
+      returns: model.getReturns(),
+    };
+  } catch {
+    return null;
   }
-
-  return best;
 }
 
 function fitModel(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
@@ -165,14 +158,29 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
   const harResult = fitHarRv(candles, periodsPerYear, steps);
   const novasResult = fitNoVaS(candles, periodsPerYear, steps);
 
-  // Pick model with lowest AIC
-  let best: FitResult & { aic: number } = garchResult;
+  // Compute realized variance (Parkinson RV) for QLIKE scoring
+  const returns = calculateReturns(candles);
+  const rv = perCandleParkinson(candles, returns);
 
-  if (harResult && harResult.aic < best.aic) {
-    best = harResult;
+  // Pick model with lowest QLIKE (Patton 2011) — neutral forecast-error metric.
+  // Unlike AIC (which favors MLE-calibrated models), QLIKE judges only
+  // how well the variance series predicts realized variance.
+  let best: FitResult = garchResult;
+  let bestScore = qlike(garchResult.varianceSeries, rv);
+
+  if (harResult) {
+    const score = qlike(harResult.varianceSeries, rv);
+    if (score < bestScore) {
+      best = harResult;
+      bestScore = score;
+    }
   }
-  if (novasResult && novasResult.aic < best.aic) {
-    best = novasResult;
+  if (novasResult) {
+    const score = qlike(novasResult.varianceSeries, rv);
+    if (score < bestScore) {
+      best = novasResult;
+      bestScore = score;
+    }
   }
 
   return best;

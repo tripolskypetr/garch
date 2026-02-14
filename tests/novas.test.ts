@@ -950,13 +950,13 @@ describe('NoVaS regression snapshot', () => {
 
     expect(result.params.lags).toBe(10);
     expect(result.params.weights.length).toBe(11);
-    // D² optimization is unchanged — same weights, same persistence
-    expect(result.params.persistence).toBeCloseTo(0.00010414538125970343, 10);
-    expect(result.params.dSquared).toBeCloseTo(0.0000069505672495141025, 6);
+    // D² initial guess fix: lag weights are dimensionless (not scaled by initVar)
+    expect(result.params.persistence).toBeCloseTo(0.5562665978208847, 10);
+    expect(result.params.dSquared).toBeCloseTo(3.683999724163274e-9, 6);
     expect(result.diagnostics.converged).toBe(true);
-    expect(result.params.df).toBeCloseTo(2.3, 0);
-    expect(result.diagnostics.logLikelihood).toBeCloseTo(-1516.6869089028805, 0);
-    expect(result.diagnostics.aic).toBeCloseTo(3057.373817805761, 0);
+    expect(result.params.df).toBeCloseTo(51, 0);
+    expect(result.diagnostics.logLikelihood).toBeCloseTo(899.8551044664334, 0);
+    expect(result.diagnostics.aic).toBeCloseTo(-1775.7102089328669, 0);
   });
 });
 

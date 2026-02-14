@@ -335,3 +335,25 @@ export function calculateAIC(logLikelihood: number, numParams: number): number {
 export function calculateBIC(logLikelihood: number, numParams: number, numObs: number): number {
   return numParams * Math.log(numObs) - 2 * logLikelihood;
 }
+
+/**
+ * QLIKE loss (Patton 2011) — standard loss function for volatility forecasts.
+ *
+ * QLIKE = (1/n) · Σ (RV_t / σ²_t − log(RV_t / σ²_t) − 1)
+ *
+ * Lower = better forecast. Neutral to calibration method — judges only
+ * how well the variance series predicts realized variance, regardless
+ * of how the model was calibrated (MLE, OLS, D², etc.).
+ */
+export function qlike(varianceSeries: number[], rv: number[]): number {
+  const n = Math.min(varianceSeries.length, rv.length);
+  let sum = 0;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    if (varianceSeries[i] <= 0 || rv[i] <= 0) continue;
+    const ratio = rv[i] / varianceSeries[i];
+    sum += ratio - Math.log(ratio) - 1;
+    count++;
+  }
+  return count > 0 ? sum / count : Infinity;
+}
