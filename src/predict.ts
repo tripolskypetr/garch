@@ -132,25 +132,32 @@ function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): (Fi
 }
 
 function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): (FitResult & { aic: number }) | null {
-  try {
-    const model = new NoVaS(candles, { periodsPerYear });
-    const fit = model.fit();
+  // Lag order selection by AIC — standard practice in time series modeling
+  let best: (FitResult & { aic: number }) | null = null;
 
-    // Skip if persistence >= 1 (non-stationary)
-    if (fit.params.persistence >= 1) return null;
+  for (const lags of [2, 5, 10]) {
+    try {
+      const model = new NoVaS(candles, { periodsPerYear, lags });
+      const fit = model.fit();
+      if (fit.params.persistence >= 1) continue;
 
-    return {
-      forecast: model.forecast(fit.params, steps),
-      modelType: 'novas',
-      converged: fit.diagnostics.converged,
-      persistence: fit.params.persistence,
-      varianceSeries: model.getVarianceSeries(fit.params),
-      returns: model.getReturns(),
-      aic: fit.diagnostics.aic,
-    };
-  } catch {
-    return null;
+      const result: FitResult & { aic: number } = {
+        forecast: model.forecast(fit.params, steps),
+        modelType: 'novas',
+        converged: fit.diagnostics.converged,
+        persistence: fit.params.persistence,
+        varianceSeries: model.getVarianceSeries(fit.params),
+        returns: model.getReturns(),
+        aic: fit.diagnostics.aic,
+      };
+
+      if (!best || result.aic < best.aic) best = result;
+    } catch {
+      // continue to next lag configuration
+    }
   }
+
+  return best;
 }
 
 function fitModel(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
