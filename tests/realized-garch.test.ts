@@ -770,4 +770,64 @@ describe('Realized NoVaS (Candle[] uses Parkinson RV)', () => {
     // Candle[] should win or tie in most cases
     expect(candleWins).toBeGreaterThanOrEqual(5);
   });
+
+  it('all-identical OHLC candles (O=H=L=C=100) do not crash NoVaS', () => {
+    const candles: Candle[] = [];
+    for (let i = 0; i < 100; i++) {
+      candles.push({ open: 100, high: 100, low: 100, close: 100, volume: 1000 });
+    }
+
+    // All returns = 0, all Parkinson RV = 0 → fallback to r² = 0
+    const model = new NoVaS(candles);
+    const fit = model.fit();
+    expect(fit.params).toBeDefined();
+    expect(fit.diagnostics).toBeDefined();
+    // May not converge meaningfully, but must not throw
+  });
+
+  it('minimum-length Candle[] boundary (lags + 31 candles)', () => {
+    const lags = 10;
+    const minRequired = lags + 30;
+
+    // Below minimum — should throw
+    const tooShort = makeCandles(minRequired - 1, 42);
+    expect(() => new NoVaS(tooShort)).toThrow();
+
+    // Exactly at minimum — should work
+    const exact = makeCandles(minRequired, 42);
+    const model = new NoVaS(exact);
+    const fit = model.fit();
+    expect(fit.params).toBeDefined();
+    expect(fit.params.weights.length).toBe(lags + 1);
+  });
+
+  it('extremely wide candles do not produce Infinity in NoVaS', () => {
+    const rng = lcg(42);
+    const candles: Candle[] = [];
+    let price = 100;
+    for (let i = 0; i < 200; i++) {
+      const r = randn(rng) * 0.01;
+      const close = price * Math.exp(r);
+      // Extremely wide intraday range: high = 2×close, low = 0.5×close
+      const high = Math.max(price, close) * 2;
+      const low = Math.min(price, close) * 0.5;
+      candles.push({ open: price, high, low, close, volume: 1000 });
+      price = close;
+    }
+
+    const model = new NoVaS(candles);
+    const fit = model.fit();
+    const vs = model.getVarianceSeries(fit.params);
+
+    for (const v of vs) {
+      expect(Number.isFinite(v)).toBe(true);
+      expect(v).toBeGreaterThan(0);
+    }
+
+    const fc = model.forecast(fit.params, 5);
+    for (const v of fc.variance) {
+      expect(Number.isFinite(v)).toBe(true);
+      expect(v).toBeGreaterThan(0);
+    }
+  });
 });
