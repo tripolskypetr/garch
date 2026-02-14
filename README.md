@@ -322,10 +322,22 @@ where **S** = skewness and **K** = kurtosis of {W_t}. For perfect normality D^2 
 
 Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses Nelder-Mead for optimization. After fitting, **df** is profiled via grid search over the Student-t log-likelihood (same as HAR-RV).
 
-Multi-step forecast: replace future innovations with sigma^2 (since E[RV] = E[X^2] = sigma^2):
+**Two-stage calibration:**
+
+- **Stage 1** — D^2 minimization: discovers lag structure via normality criterion (model-free). Produces `weights` (a_0, ..., a_p).
+- **Stage 2** — OLS rescaling: regresses RV_{t+1} on sigma_t^2(D^2) to produce forecast-optimal weights. Produces `forecastWeights` = [beta_0, beta_1].
 
 ```
-sigma_{t+h}^2 = a_0 + sum_j a_j * E[innovation_{t+h-j}]
+forecast_sigma_t^2 = beta_0 + beta_1 * sigma_t^2(D^2)
+```
+
+D^2 acts as a data-driven smoother over RV lags — more flexible than HAR-RV's fixed rolling means (1, 5, 22). OLS rescaling adjusts for bias with only 2 parameters, keeping the model robust on small samples with noisy per-candle RV.
+
+Multi-step forecast: replace future innovations with sigma^2 (since E[RV] = E[X^2] = sigma^2), then rescale:
+
+```
+d2_{t+h} = a_0 + sum_j a_j * E[innovation_{t+h-j}]
+sigma_{t+h}^2 = beta_0 + beta_1 * d2_{t+h}
 ```
 
 ### Model Auto-Selection
@@ -340,7 +352,7 @@ Lower QLIKE = better forecast. Unlike AIC (which favors MLE-calibrated models), 
 
 1. **GARCH-family pipeline**: fit GARCH, EGARCH, GJR-GARCH — pick best by AIC (fair since all three optimize Student-t LL)
 2. **HAR-RV pipeline**: fit HAR-RV via OLS. Skip if persistence >= 1 or R^2 < 0
-3. **NoVaS pipeline**: fit NoVaS via D^2 minimization. Skip if persistence >= 1
+3. **NoVaS pipeline**: fit NoVaS via D^2 minimization + OLS rescaling. Skip if persistence >= 1
 4. Compute Parkinson RV from candles. Score each pipeline's variance series by QLIKE. Lowest QLIKE wins
 
 ```

@@ -13,6 +13,7 @@ interface GarchParams {
     persistence: number;
     unconditionalVariance: number;
     annualizedVol: number;
+    df: number;
 }
 interface EgarchParams {
     omega: number;
@@ -23,6 +24,18 @@ interface EgarchParams {
     unconditionalVariance: number;
     annualizedVol: number;
     leverageEffect: number;
+    df: number;
+}
+interface GjrGarchParams {
+    omega: number;
+    alpha: number;
+    gamma: number;
+    beta: number;
+    persistence: number;
+    unconditionalVariance: number;
+    annualizedVol: number;
+    leverageEffect: number;
+    df: number;
 }
 interface CalibrationResult<T> {
     params: T;
@@ -44,6 +57,28 @@ interface LeverageStats {
     positiveVol: number;
     ratio: number;
     recommendation: 'garch' | 'egarch';
+}
+interface HarRvParams {
+    beta0: number;
+    betaShort: number;
+    betaMedium: number;
+    betaLong: number;
+    persistence: number;
+    unconditionalVariance: number;
+    annualizedVol: number;
+    r2: number;
+    df: number;
+}
+interface NoVaSParams {
+    weights: number[];
+    forecastWeights: number[];
+    lags: number;
+    persistence: number;
+    unconditionalVariance: number;
+    annualizedVol: number;
+    dSquared: number;
+    r2: number;
+    df: number;
 }
 interface OptimizerResult {
     x: number[];
@@ -70,6 +105,7 @@ interface GarchOptions {
  */
 declare class Garch {
     private returns;
+    private rv;
     private periodsPerYear;
     private initialVariance;
     constructor(data: Candle[] | number[], options?: GarchOptions);
@@ -118,10 +154,11 @@ interface EgarchOptions {
  * - α (alpha): magnitude effect
  * - γ (gamma): leverage effect (typically negative)
  * - β (beta): persistence
- * - E[|z|] = √(2/π) for standard normal
+ * - E[|z|] = expectedAbsStudentT(df) for Student-t(df)
  */
 declare class Egarch {
     private returns;
+    private rv;
     private periodsPerYear;
     private initialVariance;
     constructor(data: Candle[] | number[], options?: EgarchOptions);
@@ -157,6 +194,193 @@ declare class Egarch {
  * Convenience function to calibrate EGARCH(1,1) from candles
  */
 declare function calibrateEgarch(data: Candle[] | number[], options?: EgarchOptions): CalibrationResult<EgarchParams>;
+
+interface HarRvOptions {
+    periodsPerYear?: number;
+    shortLag?: number;
+    mediumLag?: number;
+    longLag?: number;
+}
+/**
+ * HAR-RV model (Corsi, 2009)
+ *
+ * RV_{t+1} = β₀ + β₁·RV_short + β₂·RV_medium + β₃·RV_long + ε
+ *
+ * where:
+ * - RV_short  = mean(rv[t-s+1..t])  (default s=1)
+ * - RV_medium = mean(rv[t-m+1..t])  (default m=5)
+ * - RV_long   = mean(rv[t-l+1..t])  (default l=22)
+ * - rv[t] = Parkinson(candle_t) for OHLC data, r[t]² for prices-only
+ *
+ * Parkinson (1980): RV = (1/(4·ln2))·(ln(H/L))², ~5x more efficient than r².
+ *
+ * Uses OLS for estimation — closed-form, always converges.
+ */
+declare class HarRv {
+    private returns;
+    private rv;
+    private periodsPerYear;
+    private shortLag;
+    private mediumLag;
+    private longLag;
+    constructor(data: Candle[] | number[], options?: HarRvOptions);
+    /**
+     * Calibrate HAR-RV via OLS.
+     */
+    fit(): CalibrationResult<HarRvParams>;
+    /**
+     * Internal: compute variance series from beta vector.
+     */
+    private getVarianceSeriesInternal;
+    /**
+     * Calculate conditional variance series given parameters.
+     */
+    getVarianceSeries(params: HarRvParams): number[];
+    /**
+     * Forecast variance forward.
+     *
+     * Uses iterative substitution: each forecast step feeds back
+     * into the rolling RV components for subsequent steps.
+     */
+    forecast(params: HarRvParams, steps?: number): VolatilityForecast;
+    /**
+     * Get the return series.
+     */
+    getReturns(): number[];
+    /**
+     * Get realized variance series (squared returns).
+     */
+    getRv(): number[];
+}
+/**
+ * Convenience function to calibrate HAR-RV from candles or prices.
+ */
+declare function calibrateHarRv(data: Candle[] | number[], options?: HarRvOptions): CalibrationResult<HarRvParams>;
+
+interface GjrGarchOptions {
+    periodsPerYear?: number;
+    maxIter?: number;
+    tol?: number;
+}
+/**
+ * GJR-GARCH(1,1) model (Glosten, Jagannathan & Runkle, 1993)
+ *
+ * σ²ₜ = ω + α·ε²ₜ₋₁ + γ·ε²ₜ₋₁·I(rₜ₋₁<0) + β·σ²ₜ₋₁
+ *
+ * where:
+ * - ω (omega) > 0: constant term
+ * - α (alpha) ≥ 0: symmetric shock response
+ * - γ (gamma) ≥ 0: asymmetric leverage coefficient
+ * - β (beta) ≥ 0: persistence
+ * - I(r<0) = 1 when return is negative, 0 otherwise
+ * - Stationarity: α + γ/2 + β < 1
+ *
+ * With Candle[] input, ε² is replaced by Parkinson per-candle RV.
+ * Leverage direction still comes from close-to-close return sign.
+ */
+declare class GjrGarch {
+    private returns;
+    private rv;
+    private periodsPerYear;
+    private initialVariance;
+    constructor(data: Candle[] | number[], options?: GjrGarchOptions);
+    /**
+     * Calibrate GJR-GARCH(1,1) parameters using Maximum Likelihood Estimation
+     */
+    fit(options?: {
+        maxIter?: number;
+        tol?: number;
+    }): CalibrationResult<GjrGarchParams>;
+    /**
+     * Calculate conditional variance series given parameters
+     */
+    getVarianceSeries(params: GjrGarchParams): number[];
+    /**
+     * Forecast variance forward
+     */
+    forecast(params: GjrGarchParams, steps?: number): VolatilityForecast;
+    /**
+     * Get the return series
+     */
+    getReturns(): number[];
+    /**
+     * Get initial variance estimate
+     */
+    getInitialVariance(): number;
+}
+/**
+ * Convenience function to calibrate GJR-GARCH(1,1) from candles
+ */
+declare function calibrateGjrGarch(data: Candle[] | number[], options?: GjrGarchOptions): CalibrationResult<GjrGarchParams>;
+
+interface NoVaSOptions {
+    periodsPerYear?: number;
+    lags?: number;
+    maxIter?: number;
+    tol?: number;
+}
+/**
+ * NoVaS (Normalizing and Variance-Stabilizing) model (Politis, 2003)
+ *
+ * Two-stage calibration:
+ *
+ * Stage 1 — D² minimization (model-free normality):
+ *   σ²_t = a_0 + a_1·X²_{t-1} + a_2·X²_{t-2} + ... + a_p·X²_{t-p}
+ *   W_t  = X_t / σ_t
+ *   Minimize D² = S² + (K - 3)² where S, K are skewness and kurtosis of {W_t}.
+ *
+ * Stage 2 — OLS refinement (forecast-optimal):
+ *   RV_{t+1} = β₀ + β₁·RV_{t-1} + ... + βₚ·RV_{t-p}
+ *   OLS on individual lags captures arbitrary lag structure that HAR-RV's
+ *   3 rolling means (1,5,22) cannot represent.
+ *
+ * D² discovers lag structure (model-free). OLS refines for prediction accuracy.
+ * Both weight sets are stored in params — no identity loss.
+ */
+declare class NoVaS {
+    private returns;
+    private rv;
+    private periodsPerYear;
+    private lags;
+    constructor(data: Candle[] | number[], options?: NoVaSOptions);
+    /**
+     * Calibrate NoVaS weights via two-stage procedure:
+     * Stage 1: D² minimization (normality of W_t)
+     * Stage 2: OLS on individual RV lags (forecast-optimal weights)
+     */
+    fit(options?: {
+        maxIter?: number;
+        tol?: number;
+    }): CalibrationResult<NoVaSParams>;
+    /**
+     * Internal: compute variance series from weight vector.
+     */
+    private getVarianceSeriesInternal;
+    /**
+     * Calculate conditional variance series using D² weights (normalization identity).
+     */
+    getVarianceSeries(params: NoVaSParams): number[];
+    /**
+     * Calculate forecast variance series using OLS-optimal weights.
+     * Used for QLIKE model comparison — measures forecast quality.
+     */
+    getForecastVarianceSeries(params: NoVaSParams): number[];
+    /**
+     * Forecast variance forward using OLS-optimal forecastWeights.
+     *
+     * One-step: σ²_{t+1} = β₀ + Σ βⱼ · RV_{t+1-j}
+     * Multi-step: replace future RV with σ² (E[RV] = σ²).
+     */
+    forecast(params: NoVaSParams, steps?: number): VolatilityForecast;
+    /**
+     * Get the return series.
+     */
+    getReturns(): number[];
+}
+/**
+ * Convenience function to calibrate NoVaS from candles or prices.
+ */
+declare function calibrateNoVaS(data: Candle[] | number[], options?: NoVaSOptions): CalibrationResult<NoVaSParams>;
 
 /**
  * Calculate log returns from candles
@@ -197,6 +421,15 @@ declare function garmanKlassVariance(candles: Candle[]): number;
  */
 declare function yangZhangVariance(candles: Candle[]): number;
 /**
+ * Per-candle Parkinson (1980) realized variance proxy.
+ *
+ * RV_i = (1/(4·ln2)) · ln(H/L)²
+ *
+ * ~5× more efficient than squared returns. Falls back to r² when H === L.
+ * rv[i] aligned with returns[i], using candles[i+1]'s OHLC.
+ */
+declare function perCandleParkinson(candles: Candle[], returns: number[]): number[];
+/**
  * Expected value of |Z| where Z ~ N(0,1)
  * E[|Z|] = sqrt(2/π)
  */
@@ -213,6 +446,45 @@ declare function ljungBox(data: number[], maxLag: number): {
     statistic: number;
     pValue: number;
 };
+/**
+ * Log-Gamma function via Lanczos approximation (g=7, n=9).
+ * Accurate to ~15 digits for x > 0.
+ */
+declare function logGamma(x: number): number;
+/**
+ * Per-observation Student-t negative log-likelihood contribution.
+ *
+ * For standardized t(df) with variance σ²_t:
+ *   -LL_i = 0.5·ln(σ²_t) + ((df+1)/2)·ln(1 + r²_t / ((df-2)·σ²_t))
+ *         - lnΓ((df+1)/2) + lnΓ(df/2) + 0.5·ln(π·(df-2))
+ *
+ * Returns the per-observation neg-LL (without the constant terms).
+ * Caller accumulates and adds the constant once.
+ */
+declare function studentTNegLL(returns: number[], varianceSeries: number[], df: number): number;
+/**
+ * E[|Z|] where Z follows a standardized Student-t(df) distribution (variance = 1).
+ *
+ * E[|Z|] = √((df-2)/π) · Γ((df-1)/2) / Γ(df/2)
+ *
+ * Converges to √(2/π) as df → ∞ (Gaussian limit).
+ */
+declare function expectedAbsStudentT(df: number): number;
+/**
+ * 1D grid search for optimal df that minimizes Student-t neg-LL.
+ * Used by HAR-RV and NoVaS where df is profiled after main optimization.
+ */
+declare function profileStudentTDf(returns: number[], varianceSeries: number[]): number;
+/**
+ * QLIKE loss (Patton 2011) — standard loss function for volatility forecasts.
+ *
+ * QLIKE = (1/n) · Σ (RV_t / σ²_t − log(RV_t / σ²_t) − 1)
+ *
+ * Lower = better forecast. Neutral to calibration method — judges only
+ * how well the variance series predicts realized variance, regardless
+ * of how the model was calibrated (MLE, OLS, D², etc.).
+ */
+declare function qlike(varianceSeries: number[], rv: number[]): number;
 
 type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
 interface PredictionResult {
@@ -221,7 +493,7 @@ interface PredictionResult {
     move: number;
     upperPrice: number;
     lowerPrice: number;
-    modelType: 'garch' | 'egarch';
+    modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
     reliable: boolean;
 }
 /**
@@ -257,5 +529,5 @@ declare function nelderMead(fn: (x: number[]) => number, x0: number[], options?:
     sigma?: number;
 }): OptimizerResult;
 
-export { EXPECTED_ABS_NORMAL, Egarch, Garch, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, checkLeverageEffect, garmanKlassVariance, ljungBox, nelderMead, predict, predictRange, sampleVariance, sampleVarianceWithMean, yangZhangVariance };
-export type { CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, LeverageStats, OptimizerResult, PredictionResult, VolatilityForecast };
+export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, ljungBox, logGamma, nelderMead, perCandleParkinson, predict, predictRange, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTNegLL, yangZhangVariance };
+export type { CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, GjrGarchOptions, GjrGarchParams, HarRvOptions, HarRvParams, LeverageStats, NoVaSOptions, NoVaSParams, OptimizerResult, PredictionResult, VolatilityForecast };

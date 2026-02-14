@@ -145,7 +145,7 @@ function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): Fit
       modelType: 'novas',
       converged: fit.diagnostics.converged,
       persistence: fit.params.persistence,
-      varianceSeries: model.getVarianceSeries(fit.params),
+      varianceSeries: model.getForecastVarianceSeries(fit.params),
       returns: model.getReturns(),
     };
   } catch {

@@ -279,7 +279,8 @@ describe('NoVaS', () => {
         const lastVar = fc.variance[99];
         const uncond = fit.params.unconditionalVariance;
         const diff = Math.abs(lastVar - uncond) / uncond;
-        expect(diff).toBeLessThan(0.5);
+        // OLS forecastWeights may converge to a different level than D² unconditionalVariance
+        expect(diff).toBeLessThan(1.0);
       }
     });
 
@@ -580,21 +581,22 @@ describe('NoVaS independent verification', () => {
 // ── Forecast deep tests ──────────────────────────────────────
 
 describe('NoVaS forecast deep tests', () => {
-  it('forecast step 1 uses actual squared returns', () => {
+  it('forecast step 1 uses OLS-rescaled D² variance', () => {
     const prices = generatePrices(300, 42);
     const model = new NoVaS(prices);
     const fit = model.fit();
     const returns = model.getReturns();
     const r2 = returns.map(r => r * r);
-    const { weights, lags } = fit.params;
+    const { weights, forecastWeights, lags } = fit.params;
+    const [beta0, beta1] = forecastWeights;
 
-    // Manual computation
+    // Manual: D² variance at t+1
     const t = r2.length;
-    let expected = weights[0];
-    for (let j = 1; j <= lags; j++) {
-      expected += weights[j] * r2[t - j];
-    }
-    expected = Math.max(expected, 1e-20);
+    let d2v = weights[0];
+    for (let j = 1; j <= lags; j++) d2v += weights[j] * r2[t - j];
+    d2v = Math.max(d2v, 1e-20);
+    // OLS rescaling
+    const expected = Math.max(beta0 + beta1 * d2v, 1e-20);
 
     const fc = model.forecast(fit.params, 1);
     expect(fc.variance[0]).toBeCloseTo(expected, 12);
@@ -606,21 +608,24 @@ describe('NoVaS forecast deep tests', () => {
     const fit = model.fit();
     const returns = model.getReturns();
     const r2 = returns.map(r => r * r);
-    const { weights, lags } = fit.params;
+    const { weights, forecastWeights, lags } = fit.params;
+    const [beta0, beta1] = forecastWeights;
 
     const fc = model.forecast(fit.params, 2);
 
-    // Step 1
+    // Step 1: D² variance + rescaling
     const t = r2.length;
-    let v1 = weights[0];
-    for (let j = 1; j <= lags; j++) v1 += weights[j] * r2[t - j];
-    v1 = Math.max(v1, 1e-20);
+    let d2v1 = weights[0];
+    for (let j = 1; j <= lags; j++) d2v1 += weights[j] * r2[t - j];
+    d2v1 = Math.max(d2v1, 1e-20);
+    const v1 = Math.max(beta0 + beta1 * d2v1, 1e-20);
 
-    // Step 2: r2 extended with v1
+    // Step 2: extend history with v1, compute D² variance, rescale
     const extended = [...r2, v1];
-    let v2 = weights[0];
-    for (let j = 1; j <= lags; j++) v2 += weights[j] * extended[extended.length - j];
-    v2 = Math.max(v2, 1e-20);
+    let d2v2 = weights[0];
+    for (let j = 1; j <= lags; j++) d2v2 += weights[j] * extended[extended.length - j];
+    d2v2 = Math.max(d2v2, 1e-20);
+    const v2 = Math.max(beta0 + beta1 * d2v2, 1e-20);
 
     expect(fc.variance[0]).toBeCloseTo(v1, 12);
     expect(fc.variance[1]).toBeCloseTo(v2, 12);
@@ -950,9 +955,11 @@ describe('NoVaS regression snapshot', () => {
 
     expect(result.params.lags).toBe(10);
     expect(result.params.weights.length).toBe(11);
+    expect(result.params.forecastWeights.length).toBe(2); // [β₀, β₁] OLS rescaling
     // D² initial guess fix: lag weights are dimensionless (not scaled by initVar)
     expect(result.params.persistence).toBeCloseTo(0.5562665978208847, 10);
     expect(result.params.dSquared).toBeCloseTo(3.683999724163274e-9, 6);
+    expect(result.params.r2).toBeCloseTo(0.03447360681282452, 6);
     expect(result.diagnostics.converged).toBe(true);
     expect(result.params.df).toBeCloseTo(51, 0);
     expect(result.diagnostics.logLikelihood).toBeCloseTo(899.8551044664334, 0);

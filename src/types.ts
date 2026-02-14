@@ -79,11 +79,13 @@ export interface HarRvParams {
 
 export interface NoVaSParams {
   weights: number[];
+  forecastWeights: number[];
   lags: number;
   persistence: number;
   unconditionalVariance: number;
   annualizedVol: number;
   dSquared: number;
+  r2: number;
   df: number;
 }
 

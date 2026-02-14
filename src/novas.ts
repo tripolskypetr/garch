@@ -23,20 +23,21 @@ const DEFAULT_LAGS = 10;
 /**
  * NoVaS (Normalizing and Variance-Stabilizing) model (Politis, 2003)
  *
- * Model-free volatility prediction using the ARCH frame:
+ * Two-stage calibration:
  *
+ * Stage 1 — D² minimization (model-free normality):
  *   σ²_t = a_0 + a_1·X²_{t-1} + a_2·X²_{t-2} + ... + a_p·X²_{t-p}
  *   W_t  = X_t / σ_t
+ *   Minimize D² = S² + (K - 3)² where S, K are skewness and kurtosis of {W_t}.
  *
- * Parameters a_0, ..., a_p are chosen to minimize the non-normality
- * of the transformed series {W_t}:
+ * Stage 2 — OLS rescaling (forecast-optimal):
+ *   RV_{t+1} = β₀ + β₁·σ²_t(D²)
+ *   The D²-discovered σ²_t acts as a data-driven smoother over RV lags.
+ *   OLS rescales it to minimize forecast error (RSS on RV).
+ *   Only 2 parameters → robust on small samples with noisy per-candle RV.
  *
- *   D² = S² + (K - 3)²
- *
- * where S = skewness and K = kurtosis of {W_t}.
- *
- * Unlike GARCH (MLE), NoVaS is model-free — no distributional assumptions.
- * Constraints: a_0 > 0, a_j >= 0, sum(a_1..a_p) < 1 (stationarity).
+ * D² discovers lag structure (model-free). OLS rescales for prediction accuracy.
+ * Both weight sets are stored in params — no identity loss.
  */
 export class NoVaS {
   private returns: number[];
@@ -66,8 +67,9 @@ export class NoVaS {
   }
 
   /**
-   * Calibrate NoVaS weights by minimizing D² = S² + (K-3)²
-   * of the transformed series W_t = X_t / σ_t.
+   * Calibrate NoVaS weights via two-stage procedure:
+   * Stage 1: D² minimization (normality of W_t)
+   * Stage 2: OLS rescaling of D²-variance (forecast-optimal)
    */
   fit(options: { maxIter?: number; tol?: number } = {}): CalibrationResult<NoVaSParams> {
     const { maxIter = 2000, tol = 1e-8 } = options;
@@ -155,10 +157,48 @@ export class NoVaS {
       : sampleVariance(returns);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
+    // ── Stage 2: OLS rescaling of D²-variance ──────────────
+    // RV_{t+1} = β₀ + β₁·σ²_t(D²)
+    // D² weights discover lag structure; OLS rescales for forecast accuracy.
+    // Only 2 parameters → robust on small samples with noisy per-candle RV.
+    const d2Variance = this.getVarianceSeriesInternal(weights);
+    let forecastWeights: number[];
+    let olsR2: number;
+    try {
+      let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0, count = 0;
+      for (let t = p; t < n - 1; t++) {
+        const x = d2Variance[t];
+        const y = r2[t + 1];
+        sumX += x;
+        sumY += y;
+        sumXX += x * x;
+        sumXY += x * y;
+        count++;
+      }
+      const denom = count * sumXX - sumX * sumX;
+      if (Math.abs(denom) < 1e-30) throw new Error('Degenerate variance series');
+      const beta1 = (count * sumXY - sumX * sumY) / denom;
+      const beta0 = (sumY - beta1 * sumX) / count;
+      forecastWeights = [beta0, beta1];
+
+      // R²
+      const yMean = sumY / count;
+      let rss = 0, tss = 0;
+      for (let t = p; t < n - 1; t++) {
+        const yHat = beta0 + beta1 * d2Variance[t];
+        rss += (r2[t + 1] - yHat) ** 2;
+        tss += (r2[t + 1] - yMean) ** 2;
+      }
+      olsR2 = tss > 0 ? 1 - rss / tss : 0;
+    } catch {
+      // OLS failed — fall back to identity rescaling [0, 1]
+      forecastWeights = [0, 1];
+      olsR2 = 0;
+    }
+
     // Student-t log-likelihood for AIC comparison with GARCH/EGARCH/HAR-RV
-    const varianceSeries = this.getVarianceSeriesInternal(weights);
-    const df = profileStudentTDf(returns, varianceSeries);
-    const ll = -studentTNegLL(returns, varianceSeries, df);
+    const df = profileStudentTDf(returns, d2Variance);
+    const ll = -studentTNegLL(returns, d2Variance, df);
 
     const numParams = p + 2; // weights + df
     const nObs = n - p; // usable observations for D²
@@ -166,11 +206,13 @@ export class NoVaS {
     return {
       params: {
         weights,
+        forecastWeights,
         lags: p,
         persistence,
         unconditionalVariance,
         annualizedVol,
         dSquared: result.fx,
+        r2: olsR2,
         df,
       },
       diagnostics: {
@@ -184,7 +226,7 @@ export class NoVaS {
   }
 
   /**
-   * Internal: compute variance series from weight vector.
+   * Internal: compute variance series from D² weight vector.
    */
   private getVarianceSeriesInternal(weights: number[]): number[] {
     const { returns, lags } = this;
@@ -209,20 +251,32 @@ export class NoVaS {
   }
 
   /**
-   * Calculate conditional variance series given parameters.
+   * Calculate conditional variance series using D² weights (normalization identity).
    */
   getVarianceSeries(params: NoVaSParams): number[] {
     return this.getVarianceSeriesInternal(params.weights);
   }
 
   /**
-   * Forecast variance forward.
+   * Calculate forecast variance series using OLS-rescaled D² variance.
+   * forecast_σ²_t = β₀ + β₁·σ²_t(D²)
+   * Used for QLIKE model comparison — measures forecast quality.
+   */
+  getForecastVarianceSeries(params: NoVaSParams): number[] {
+    const d2Series = this.getVarianceSeriesInternal(params.weights);
+    const [beta0, beta1] = params.forecastWeights;
+    return d2Series.map(v => Math.max(beta0 + beta1 * v, 1e-20));
+  }
+
+  /**
+   * Forecast variance forward using OLS-rescaled D² weights.
    *
-   * One-step: σ²_{t+1} = a_0 + Σ a_j · X²_{t+1-j}
-   * Multi-step: replace future X² with σ² (E[X²] = σ²).
+   * Step 1: compute D²-based σ²_{t+h} using D² weights
+   * Step 2: rescale via β₀ + β₁·σ²_{t+h}
    */
   forecast(params: NoVaSParams, steps: number = 1): VolatilityForecast {
-    const { weights, lags } = params;
+    const { weights, forecastWeights, lags } = params;
+    const [beta0, beta1] = forecastWeights;
     const r2 = this.rv ?? this.returns.map(r => r * r);
 
     // Working buffer: past innovation values + forecasted variances
@@ -231,13 +285,17 @@ export class NoVaS {
 
     for (let h = 0; h < steps; h++) {
       const t = history.length;
-      let v = weights[0];
+      // D²-based variance at this step
+      let d2v = weights[0];
       for (let j = 1; j <= lags; j++) {
-        v += weights[j] * history[t - j];
+        d2v += weights[j] * history[t - j];
       }
-      v = Math.max(v, 1e-20);
+      d2v = Math.max(d2v, 1e-20);
+
+      // OLS-rescaled forecast
+      const v = Math.max(beta0 + beta1 * d2v, 1e-20);
       variance.push(v);
-      history.push(v); // future E[X²] = σ²
+      history.push(v); // future E[RV] = σ²
     }
 
     return {
