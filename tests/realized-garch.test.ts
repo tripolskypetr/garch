@@ -1440,20 +1440,19 @@ describe('ground-truth: DGP tailored to each model', () => {
     expect(relError).toBeLessThan(0.75);
   });
 
-  it('HAR-RV DGP: predict returns valid modelType from GARCH-family or har-rv', () => {
-    // HAR-RV DGP has multi-scale vol; predict auto-selects by AIC.
-    // GARCH-family often wins AIC (MLE vs synthetic LL), but the result must be valid.
-    let modelTypes: Set<string> = new Set();
+  it('HAR-RV DGP: har-rv wins QLIKE model selection in majority of seeds', () => {
+    // HAR-RV DGP generates multi-scale vol (daily/weekly/monthly components).
+    // HAR-RV's OLS regression on rolling RV means captures this structure better
+    // than GARCH's single exponential decay. QLIKE (forecast error) confirms.
+    let harWins = 0;
     for (let seed = 1; seed <= 20; seed++) {
       const { candles } = makeHarDGP(500, seed);
       const result = predict(candles, '15m');
       expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
       expect(result.sigma).toBeGreaterThan(0);
-      expect(Number.isFinite(result.sigma)).toBe(true);
-      modelTypes.add(result.modelType);
+      if (result.modelType === 'har-rv') harWins++;
     }
-    // At least 2 different models considered across seeds (not always the same)
-    expect(modelTypes.size).toBeGreaterThanOrEqual(1);
+    expect(harWins).toBeGreaterThanOrEqual(12);
   });
 
   // ── NoVaS DGP ─────────────────────────────────────────────
@@ -1466,22 +1465,23 @@ describe('ground-truth: DGP tailored to each model', () => {
     expect(relError).toBeLessThan(0.75);
   });
 
-  it('NoVaS DGP: predict returns valid modelType and reasonable σ', () => {
-    // NoVaS DGP has sine-wave non-parametric vol; predict auto-selects by AIC.
-    // GARCH-family often wins AIC, but the result must be valid.
-    let modelTypes: Set<string> = new Set();
+  it('NoVaS DGP: predict returns valid output with reasonable σ', () => {
+    // NoVaS calibrates via D² (normality of W_t = r_t/σ_t), not forecast error.
+    // QLIKE rewards models whose σ²_t tracks RV closely. HAR-RV's OLS directly
+    // minimizes RSS on RV — essentially the same objective as QLIKE — so it
+    // typically wins. NoVaS is valuable for distribution-free normalization,
+    // not for forecast-error competitions. This is a mathematical limitation
+    // of D²-optimization, not a bug.
     for (let seed = 1; seed <= 20; seed++) {
       const { candles, sigmaTrue } = makeNovasDGP(500, seed);
       const result = predict(candles, '15m');
       expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
       expect(result.sigma).toBeGreaterThan(0);
       expect(Number.isFinite(result.sigma)).toBe(true);
-      // Whatever model is selected, σ should be in the right ballpark
+      // Whatever model QLIKE selects, σ should be in the right ballpark
       const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
       expect(relError).toBeLessThan(1.0);
-      modelTypes.add(result.modelType);
     }
-    expect(modelTypes.size).toBeGreaterThanOrEqual(1);
   });
 
   // ── Cross-DGP: each DGP produces a valid forecast ─────────
