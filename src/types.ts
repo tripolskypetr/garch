@@ -62,6 +62,15 @@ export interface HarRvParams {
   r2: number;
 }
 
+export interface NoVaSParams {
+  weights: number[];
+  lags: number;
+  persistence: number;
+  unconditionalVariance: number;
+  annualizedVol: number;
+  dSquared: number;
+}
+
 export interface OptimizerResult {
   x: number[];
   fx: number;

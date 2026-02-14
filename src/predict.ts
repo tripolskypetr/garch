@@ -2,6 +2,7 @@ import type { Candle, VolatilityForecast } from './types.js';
 import { Garch } from './garch.js';
 import { Egarch } from './egarch.js';
 import { HarRv } from './har.js';
+import { NoVaS } from './novas.js';
 import { calculateReturnsFromPrices, checkLeverageEffect, ljungBox } from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
@@ -38,7 +39,7 @@ export interface PredictionResult {
   move: number;
   upperPrice: number;
   lowerPrice: number;
-  modelType: 'garch' | 'egarch' | 'har-rv';
+  modelType: 'garch' | 'egarch' | 'har-rv' | 'novas';
   reliable: boolean;
 }
 
@@ -51,7 +52,7 @@ function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
 
 interface FitResult {
   forecast: VolatilityForecast;
-  modelType: 'garch' | 'egarch' | 'har-rv';
+  modelType: 'garch' | 'egarch' | 'har-rv' | 'novas';
   converged: boolean;
   persistence: number;
   varianceSeries: number[];
@@ -111,16 +112,44 @@ function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): (Fi
   }
 }
 
+function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): (FitResult & { aic: number }) | null {
+  try {
+    const model = new NoVaS(candles, { periodsPerYear });
+    const fit = model.fit();
+
+    // Skip if persistence >= 1 (non-stationary)
+    if (fit.params.persistence >= 1) return null;
+
+    return {
+      forecast: model.forecast(fit.params, steps),
+      modelType: 'novas',
+      converged: fit.diagnostics.converged,
+      persistence: fit.params.persistence,
+      varianceSeries: model.getVarianceSeries(fit.params),
+      returns: model.getReturns(),
+      aic: fit.diagnostics.aic,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function fitModel(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
   const garchResult = fitGarchFamily(candles, periodsPerYear, steps);
   const harResult = fitHarRv(candles, periodsPerYear, steps);
+  const novasResult = fitNoVaS(candles, periodsPerYear, steps);
 
-  // Pick model with lower AIC (better fit)
-  if (harResult && harResult.aic < garchResult.aic) {
-    return harResult;
+  // Pick model with lowest AIC
+  let best: FitResult & { aic: number } = garchResult;
+
+  if (harResult && harResult.aic < best.aic) {
+    best = harResult;
+  }
+  if (novasResult && novasResult.aic < best.aic) {
+    best = novasResult;
   }
 
-  return garchResult;
+  return best;
 }
 
 function checkReliable(fit: FitResult): boolean {

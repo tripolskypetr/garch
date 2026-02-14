@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <strong>Missing GARCH/EGARCH/HAR-RV forecast for NodeJS</strong><br>
-  GARCH, EGARCH and HAR-RV volatility models for TypeScript. Zero dependencies.
+  <strong>Missing GARCH/EGARCH/HAR-RV/NoVaS forecast for NodeJS</strong><br>
+  GARCH, EGARCH, HAR-RV and NoVaS volatility models for TypeScript. Zero dependencies.
 </p>
 
 ## Installation
@@ -17,7 +17,7 @@ npm install garch
 
 ### `predict(candles, interval, currentPrice?)`
 
-Forecast expected price range for the next candle (t+1). Auto-selects GARCH, EGARCH or HAR-RV based on leverage effect and AIC comparison. Returns a +-1 sigma price corridor.
+Forecast expected price range for the next candle (t+1). Auto-selects GARCH, EGARCH, HAR-RV or NoVaS based on leverage effect and AIC comparison. Returns a +-1 sigma price corridor.
 
 ```typescript
 import { predict } from 'garch';
@@ -57,7 +57,7 @@ interface PredictionResult {
   move: number;                   // +/- price move = currentPrice * sigma
   upperPrice: number;             // currentPrice + move
   lowerPrice: number;             // currentPrice - move
-  modelType: 'garch' | 'egarch' | 'har-rv'; // Auto-selected model
+  modelType: 'garch' | 'egarch' | 'har-rv' | 'novas'; // Auto-selected model
   reliable: boolean;              // Quality flag (convergence + persistence + Ljung-Box)
 }
 ```
@@ -222,22 +222,55 @@ beta = (X'X)^{-1} X'y
 
 Multi-step forecast via iterative substitution: each predicted RV feeds back into the rolling components for subsequent steps.
 
+### NoVaS
+
+Normalizing and Variance-Stabilizing transformation (Politis, 2003). Model-free approach using the ARCH frame:
+
+```
+sigma_t^2 = a_0 + a_1 * X_{t-1}^2 + a_2 * X_{t-2}^2 + ... + a_p * X_{t-p}^2
+W_t       = X_t / sigma_t
+```
+
+Parameters **a_0, ..., a_p** are chosen to minimize the non-normality of the transformed series {W_t}:
+
+```
+D^2 = S^2 + (K - 3)^2
+```
+
+where **S** = skewness and **K** = kurtosis of {W_t}. For perfect normality D^2 = 0.
+
+- **a_0** > 0 — baseline variance
+- **a_j** >= 0 — weight on j-th lagged squared return
+- Stationarity: **sum(a_1 ... a_p) < 1**
+- Unconditional variance: **E[sigma^2] = a_0 / (1 - sum(a_1 ... a_p))**
+- Default lags: **p = 10** (configurable)
+
+Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses Nelder-Mead for optimization.
+
+Multi-step forecast: replace future X^2 with sigma^2 (since E[X^2] = sigma^2):
+
+```
+sigma_{t+h}^2 = a_0 + sum_j a_j * E[X_{t+h-j}^2]
+```
+
 ### Model Auto-Selection
 
-`predict` and `predictRange` fit two pipelines in parallel and pick the winner by AIC:
+`predict` and `predictRange` fit three pipelines in parallel and pick the winner by AIC:
 
 1. **GARCH-family pipeline**: compute leverage ratio (negative vol / positive vol). If ratio > 1.2 — fit EGARCH, otherwise fit GARCH
 2. **HAR-RV pipeline**: fit HAR-RV via OLS. Skip if persistence >= 1 or R^2 < 0
-3. Compare AIC of both pipelines. Lower AIC wins
+3. **NoVaS pipeline**: fit NoVaS via D^2 minimization. Skip if persistence >= 1
+4. Compare AIC of all pipelines. Lowest AIC wins
 
 ```
 fitModel()
   |-- fitGarchFamily() --> GARCH or EGARCH --> AIC_1
   |-- fitHarRv()       --> HAR-RV (OLS)    --> AIC_2
-  \-- return min(AIC_1, AIC_2)
+  |-- fitNoVaS()       --> NoVaS (D²)      --> AIC_3
+  \-- return min(AIC_1, AIC_2, AIC_3)
 ```
 
-HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). GARCH/EGARCH tends to win on data with pronounced shock reactions or leverage effects.
+GARCH/EGARCH tends to win on data with pronounced shock reactions or leverage effects. HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). NoVaS tends to win on short, volatile data where parametric assumptions break down.
 
 ### Variance Estimators
 
@@ -267,19 +300,19 @@ The `reliable` flag in `PredictionResult` is `true` when all three conditions ho
 
 ### Optimization
 
-GARCH/EGARCH parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step). Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
+GARCH/EGARCH parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step). NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
 
-For AIC comparison between GARCH-family and HAR-RV, both log-likelihoods are computed using the same Gaussian formulation over the return series:
+For AIC comparison across all models, log-likelihoods are computed using the same Gaussian formulation over the return series:
 
 ```
 LL = -0.5 * sum[ ln(sigma_t^2) + epsilon_t^2 / sigma_t^2 ]
 ```
 
-where sigma_t^2 comes from either the GARCH conditional variance or the HAR-RV fitted variance.
+where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted variance, or NoVaS variance.
 
 ## Tests
 
-**467 tests** across **18 test files**. All passing.
+**623 tests** across **19 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
@@ -287,7 +320,8 @@ where sigma_t^2 comes from either the GARCH conditional variance or the HAR-RV f
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
-| HAR-RV unit | `har.test.ts` | 67 | OLS regression, R^2, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict |
+| HAR-RV unit | `har.test.ts` | 137 | OLS regression, R^2, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict, OLS orthogonality, TSS=RSS+ESS, normal equations, regression snapshots, mutation safety |
+| NoVaS unit | `novas.test.ts` | 86 | D^2 minimization, normality improvement, variance series, forecast convergence, edge cases, fuzz, integration with predict, determinism, scale invariance |
 | Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 16 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking |
 | Statistical properties | `properties.test.ts` | 13 | Parameter recovery from synthetic data, local LL maximum, unconditional variance |
 | Regression | `regression.test.ts` | 9 | Parameter recovery, deterministic outputs |

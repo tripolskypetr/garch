@@ -2,6 +2,7 @@
 export { Garch, calibrateGarch, type GarchOptions } from './garch.js';
 export { Egarch, calibrateEgarch, type EgarchOptions } from './egarch.js';
 export { HarRv, calibrateHarRv, type HarRvOptions } from './har.js';
+export { NoVaS, calibrateNoVaS, type NoVaSOptions } from './novas.js';
 
 // Utilities
 export {
@@ -34,6 +35,7 @@ export type {
   GarchParams,
   EgarchParams,
   HarRvParams,
+  NoVaSParams,
   CalibrationResult,
   VolatilityForecast,
   LeverageStats,
