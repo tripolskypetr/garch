@@ -1284,36 +1284,39 @@ describe('ground-truth: DGP tailored to each model', () => {
   }
 
   /**
-   * HAR-RV DGP: multi-scale volatility — daily, weekly, monthly components.
-   * RV_{t+1} = β₀ + β₁·RV_1 + β₂·RV_5 + β₃·RV_22 + noise
-   * Returns drawn from N(0, RV_t).
+   * HAR-RV DGP: multi-scale volatility with non-exponential ACF.
+   *
+   * Weak short (b1=0.10), strong medium (b2=0.35), strong long (b3=0.40).
+   * GARCH(1,1) forces ACF ~ (α+β)^k (single exponential) which cannot
+   * represent this mixture of three time scales.
+   *
+   * Parkinson encoding is deterministic (no random scaling) so HAR-RV's
+   * OLS recovers the true coefficients precisely.
    */
   function makeHarDGP(n: number, seed: number): { candles: Candle[]; sigmaTrue: number } {
     const rng = lcg(seed);
-    // Strong multi-scale: daily component dominant, weekly/monthly significant
-    const b0 = 1e-5, b1 = 0.4, b2 = 0.25, b3 = 0.25;
+    const b0 = 3e-5, b1 = 0.10, b2 = 0.35, b3 = 0.40;
     const uncondRV = b0 / (1 - b1 - b2 - b3);
     const rv: number[] = [];
 
-    // Burn-in with varied RV to establish multi-scale structure
-    for (let i = 0; i < 22; i++) {
-      rv.push(uncondRV * (0.5 + rng()));
+    // Burn-in: 50 periods at unconditional RV level
+    for (let i = 0; i < 50; i++) {
+      rv.push(uncondRV * (0.8 + 0.4 * rng()));
     }
 
-    // Generate RV series using HAR dynamics with meaningful noise
-    for (let t = 22; t < n; t++) {
+    // HAR dynamics
+    for (let t = 50; t < n; t++) {
       const rv1 = rv[t - 1];
       const rv5 = (rv[t - 1] + rv[t - 2] + rv[t - 3] + rv[t - 4] + rv[t - 5]) / 5;
       const rv22 = rv.slice(t - 22, t).reduce((s, v) => s + v, 0) / 22;
       let next = b0 + b1 * rv1 + b2 * rv5 + b3 * rv22;
-      // Multiplicative noise on RV (lognormal-like)
-      next *= Math.exp(randn(rng) * 0.15);
+      // Low multiplicative noise to keep HAR structure identifiable
+      next *= Math.exp(randn(rng) * 0.08);
       next = Math.max(next, 1e-10);
       rv.push(next);
     }
 
-    // Generate candles from RV series — use Parkinson-consistent OHLC
-    // Parkinson: RV = (1/(4·ln2))·ln(H/L)², so ln(H/L) = sqrt(4·ln2·RV)
+    // Generate candles with deterministic Parkinson encoding
     let price = 100;
     const candles: Candle[] = [];
     for (let i = 0; i < n; i++) {
@@ -1321,12 +1324,12 @@ describe('ground-truth: DGP tailored to each model', () => {
       const r = randn(rng) * sigma;
       const close = price * Math.exp(r);
 
-      // Set H/L range to encode true RV via Parkinson formula
-      const logRange = Math.sqrt(4 * Math.LN2 * rv[i]) * (0.8 + 0.4 * rng());
+      // Deterministic H/L: Parkinson RV extracted from candles ≈ true RV
+      const logRange = Math.sqrt(4 * Math.LN2 * rv[i]);
       const mid = (price + close) / 2;
-      const high = mid * Math.exp(logRange / 2);
-      const low = Math.max(mid * Math.exp(-logRange / 2), 1e-10);
-      candles.push({ open: price, high: Math.max(high, price, close), low: Math.min(low, price, close), close, volume: 1000 });
+      const high = Math.max(price, close, mid * Math.exp(logRange / 2));
+      const low = Math.max(Math.min(price, close, mid * Math.exp(-logRange / 2)), 1e-10);
+      candles.push({ open: price, high, low, close, volume: 1000 });
       price = close;
     }
 
@@ -1334,32 +1337,64 @@ describe('ground-truth: DGP tailored to each model', () => {
   }
 
   /**
-   * NoVaS DGP: regime-switching volatility + heavy tails.
-   * Two regimes (low/high vol), Student-t(5) innovations.
-   * Parametric models struggle; NoVaS adapts via normality criterion.
+   * NoVaS DGP: non-monotonic lag structure that GARCH(1,1) cannot capture.
+   *
+   * True variance = a_0 + Σ a_j · RV_{t-j} with spiky weights:
+   * strong at lags 1, 5, 9 (0.20, 0.18, 0.15), weak at others (0.02).
+   * GARCH forces w_j = α·β^(j-1) (geometric decay) — it cannot place
+   * extra weight at lags 5 and 9 without also weighting lags 2-4 and 6-8.
+   *
+   * Deterministic Parkinson encoding so NoVaS recovers clean innovations.
+   * Uses n=800 to overcome the 8-nat AIC penalty (12 vs 4 params).
    */
   function makeNovasDGP(n: number, seed: number): { candles: Candle[]; sigmaTrue: number } {
     const rng = lcg(seed);
-    // Mild, smooth volatility changes — no leverage, no strong clustering
-    // NoVaS is model-free and shines when parametric models overfit
-    const baseVol = 0.01;
+    const baseVar = 1e-4;
+
+    // Non-monotonic weights: peaks at lags 1, 5, 9
+    const trueA0 = baseVar * 0.15;
+    const trueWeights = [0.20, 0.02, 0.02, 0.02, 0.18, 0.02, 0.02, 0.02, 0.15, 0.05];
+    // persistence = sum = 0.70
+    const persistence = trueWeights.reduce((s, w) => s + w, 0);
+    const uncondVar = trueA0 / (1 - persistence);
+
+    // Innovation buffer (Parkinson RV values)
+    const innovations: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      innovations.push(uncondVar * (0.8 + 0.4 * rng()));
+    }
+
     let price = 100;
     const candles: Candle[] = [];
     let totalVar = 0;
 
     for (let i = 0; i < n; i++) {
-      // Slowly varying vol with a sine pattern (non-parametric)
-      const sigma = baseVol * (1 + 0.3 * Math.sin(2 * Math.PI * i / 50));
-      totalVar += sigma * sigma;
+      // Compute true conditional variance from MA(10) structure
+      let trueVar: number;
+      if (i < 10) {
+        trueVar = uncondVar;
+      } else {
+        trueVar = trueA0;
+        for (let j = 0; j < 10; j++) {
+          trueVar += trueWeights[j] * innovations[i - 1 - j];
+        }
+      }
+      trueVar = Math.max(trueVar, 1e-10);
+      totalVar += trueVar;
 
+      const sigma = Math.sqrt(trueVar);
       const r = randn(rng) * sigma;
       const close = price * Math.exp(r);
 
-      const extraUp = Math.abs(randn(rng)) * sigma * price * 0.3;
-      const extraDown = Math.abs(randn(rng)) * sigma * price * 0.3;
-      const high = Math.max(price, close) + extraUp;
-      const low = Math.max(Math.min(price, close) - extraDown, 1e-10);
+      // Deterministic Parkinson encoding
+      const logRange = Math.sqrt(4 * Math.LN2 * trueVar);
+      const mid = (price + close) / 2;
+      const high = Math.max(price, close, mid * Math.exp(logRange / 2));
+      const low = Math.max(Math.min(price, close, mid * Math.exp(-logRange / 2)), 1e-10);
       candles.push({ open: price, high, low, close, volume: 1000 });
+
+      // Record Parkinson RV as the innovation NoVaS will see
+      innovations.push(trueVar);
       price = close;
     }
 
@@ -1433,55 +1468,39 @@ describe('ground-truth: DGP tailored to each model', () => {
   // ── HAR-RV DGP ────────────────────────────────────────────
 
   it('HAR-RV DGP: predict recovers unconditional σ (< 75% error)', () => {
-    const { candles, sigmaTrue } = makeHarDGP(500, 42);
+    const { candles, sigmaTrue } = makeHarDGP(600, 42);
     const result = predict(candles, '15m');
     const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
-    // HAR has multi-scale dynamics + noisy RV → wider tolerance
     expect(relError).toBeLessThan(0.75);
   });
 
-  it('HAR-RV DGP: predict returns valid modelType from GARCH-family or har-rv', () => {
-    // HAR-RV DGP has multi-scale vol; predict auto-selects by AIC.
-    // GARCH-family often wins AIC (MLE vs synthetic LL), but the result must be valid.
-    let modelTypes: Set<string> = new Set();
+  it('HAR-RV DGP: har-rv wins model selection in majority of seeds', () => {
+    let harWins = 0;
     for (let seed = 1; seed <= 20; seed++) {
-      const { candles } = makeHarDGP(500, seed);
+      const { candles } = makeHarDGP(600, seed);
       const result = predict(candles, '15m');
-      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
-      expect(result.sigma).toBeGreaterThan(0);
-      expect(Number.isFinite(result.sigma)).toBe(true);
-      modelTypes.add(result.modelType);
+      if (result.modelType === 'har-rv') harWins++;
     }
-    // At least 2 different models considered across seeds (not always the same)
-    expect(modelTypes.size).toBeGreaterThanOrEqual(1);
+    expect(harWins).toBeGreaterThanOrEqual(12);
   });
 
   // ── NoVaS DGP ─────────────────────────────────────────────
 
   it('NoVaS DGP: predict recovers average σ (< 75% error)', () => {
-    const { candles, sigmaTrue } = makeNovasDGP(500, 42);
+    const { candles, sigmaTrue } = makeNovasDGP(800, 42);
     const result = predict(candles, '15m');
     const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
-    // Non-parametric vol pattern → wider tolerance
     expect(relError).toBeLessThan(0.75);
   });
 
-  it('NoVaS DGP: predict returns valid modelType and reasonable σ', () => {
-    // NoVaS DGP has sine-wave non-parametric vol; predict auto-selects by AIC.
-    // GARCH-family often wins AIC, but the result must be valid.
-    let modelTypes: Set<string> = new Set();
+  it('NoVaS DGP: novas wins model selection in majority of seeds', () => {
+    let novasWins = 0;
     for (let seed = 1; seed <= 20; seed++) {
-      const { candles, sigmaTrue } = makeNovasDGP(500, seed);
+      const { candles } = makeNovasDGP(800, seed);
       const result = predict(candles, '15m');
-      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
-      expect(result.sigma).toBeGreaterThan(0);
-      expect(Number.isFinite(result.sigma)).toBe(true);
-      // Whatever model is selected, σ should be in the right ballpark
-      const relError = Math.abs(result.sigma - sigmaTrue) / sigmaTrue;
-      expect(relError).toBeLessThan(1.0);
-      modelTypes.add(result.modelType);
+      if (result.modelType === 'novas') novasWins++;
     }
-    expect(modelTypes.size).toBeGreaterThanOrEqual(1);
+    expect(novasWins).toBeGreaterThanOrEqual(10);
   });
 
   // ── Cross-DGP: each DGP produces a valid forecast ─────────
@@ -1491,8 +1510,8 @@ describe('ground-truth: DGP tailored to each model', () => {
       makeGarchDGP(500, 42),
       makeEgarchDGP(500, 42),
       makeGjrDGP(500, 42),
-      makeHarDGP(500, 42),
-      makeNovasDGP(500, 42),
+      makeHarDGP(600, 42),
+      makeNovasDGP(800, 42),
     ];
 
     for (const { candles, sigmaTrue } of dgps) {
@@ -1509,8 +1528,8 @@ describe('ground-truth: DGP tailored to each model', () => {
       makeGarchDGP(500, 42),
       makeEgarchDGP(500, 42),
       makeGjrDGP(500, 42),
-      makeHarDGP(500, 42),
-      makeNovasDGP(500, 42),
+      makeHarDGP(600, 42),
+      makeNovasDGP(800, 42),
     ];
 
     const pairs = dgps
