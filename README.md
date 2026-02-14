@@ -322,6 +322,8 @@ where **S** = skewness and **K** = kurtosis of {W_t}. For perfect normality D^2 
 
 Key difference from GARCH: parameters are found via **normality criterion** (D^2 minimization), not MLE. No distributional assumptions on the return series — truly model-free. Uses Nelder-Mead for optimization. After fitting, **df** is profiled via grid search over the Student-t log-likelihood (same as HAR-RV).
 
+After D^2 optimization, weights are **rescaled via OLS** on the realized variance series to minimize forecast error. This keeps NoVaS model-free (D^2 selects lag structure) while making it QLIKE-competitive with HAR-RV.
+
 **Two-stage calibration:**
 
 - **Stage 1** — D^2 minimization: discovers lag structure via normality criterion (model-free). Produces `weights` (a_0, ..., a_p).

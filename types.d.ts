@@ -329,12 +329,13 @@ interface NoVaSOptions {
  *   W_t  = X_t / σ_t
  *   Minimize D² = S² + (K - 3)² where S, K are skewness and kurtosis of {W_t}.
  *
- * Stage 2 — OLS refinement (forecast-optimal):
- *   RV_{t+1} = β₀ + β₁·RV_{t-1} + ... + βₚ·RV_{t-p}
- *   OLS on individual lags captures arbitrary lag structure that HAR-RV's
- *   3 rolling means (1,5,22) cannot represent.
+ * Stage 2 — OLS rescaling (forecast-optimal):
+ *   RV_{t+1} = β₀ + β₁·σ²_t(D²)
+ *   The D²-discovered σ²_t acts as a data-driven smoother over RV lags.
+ *   OLS rescales it to minimize forecast error (RSS on RV).
+ *   Only 2 parameters → robust on small samples with noisy per-candle RV.
  *
- * D² discovers lag structure (model-free). OLS refines for prediction accuracy.
+ * D² discovers lag structure (model-free). OLS rescales for prediction accuracy.
  * Both weight sets are stored in params — no identity loss.
  */
 declare class NoVaS {
@@ -346,14 +347,14 @@ declare class NoVaS {
     /**
      * Calibrate NoVaS weights via two-stage procedure:
      * Stage 1: D² minimization (normality of W_t)
-     * Stage 2: OLS on individual RV lags (forecast-optimal weights)
+     * Stage 2: OLS rescaling of D²-variance (forecast-optimal)
      */
     fit(options?: {
         maxIter?: number;
         tol?: number;
     }): CalibrationResult<NoVaSParams>;
     /**
-     * Internal: compute variance series from weight vector.
+     * Internal: compute variance series from D² weight vector.
      */
     private getVarianceSeriesInternal;
     /**
@@ -361,15 +362,16 @@ declare class NoVaS {
      */
     getVarianceSeries(params: NoVaSParams): number[];
     /**
-     * Calculate forecast variance series using OLS-optimal weights.
+     * Calculate forecast variance series using OLS-rescaled D² variance.
+     * forecast_σ²_t = β₀ + β₁·σ²_t(D²)
      * Used for QLIKE model comparison — measures forecast quality.
      */
     getForecastVarianceSeries(params: NoVaSParams): number[];
     /**
-     * Forecast variance forward using OLS-optimal forecastWeights.
+     * Forecast variance forward using OLS-rescaled D² weights.
      *
-     * One-step: σ²_{t+1} = β₀ + Σ βⱼ · RV_{t+1-j}
-     * Multi-step: replace future RV with σ² (E[RV] = σ²).
+     * Step 1: compute D²-based σ²_{t+h} using D² weights
+     * Step 2: rescale via β₀ + β₁·σ²_{t+h}
      */
     forecast(params: NoVaSParams, steps?: number): VolatilityForecast;
     /**
