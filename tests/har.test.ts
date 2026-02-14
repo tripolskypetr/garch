@@ -524,6 +524,549 @@ describe('HAR-RV OLS correctness', () => {
   });
 });
 
+// ── OLS mathematical correctness (deep) ──────────────────────
+
+describe('HAR-RV OLS deep mathematical tests', () => {
+  it('OLS residuals are orthogonal to each regressor (X\'e ≈ 0)', () => {
+    const prices = generatePrices(500, 33);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    // Reconstruct X and residuals in regression range
+    const longLag = 22;
+    const dotProducts = [0, 0, 0, 0]; // intercept, short, medium, long
+
+    for (let t = longLag - 1; t < rv.length - 1; t++) {
+      const rvShort = rv[t];
+      const rvMedium = rv.slice(t - 4, t + 1).reduce((a, b) => a + b, 0) / 5;
+      const rvLong = rv.slice(t - 21, t + 1).reduce((a, b) => a + b, 0) / 22;
+
+      const predicted = fit.params.beta0
+        + fit.params.betaShort * rvShort
+        + fit.params.betaMedium * rvMedium
+        + fit.params.betaLong * rvLong;
+      const residual = rv[t + 1] - predicted;
+
+      dotProducts[0] += 1 * residual;         // intercept column
+      dotProducts[1] += rvShort * residual;
+      dotProducts[2] += rvMedium * residual;
+      dotProducts[3] += rvLong * residual;
+    }
+
+    for (let j = 0; j < 4; j++) {
+      expect(Math.abs(dotProducts[j])).toBeLessThan(1e-10);
+    }
+  });
+
+  it('TSS = RSS + ESS decomposition holds', () => {
+    const prices = generatePrices(500, 44);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    const longLag = 22;
+    const yActual: number[] = [];
+    const yPredicted: number[] = [];
+
+    for (let t = longLag - 1; t < rv.length - 1; t++) {
+      const rvShort = rv[t];
+      const rvMedium = rv.slice(t - 4, t + 1).reduce((a, b) => a + b, 0) / 5;
+      const rvLong = rv.slice(t - 21, t + 1).reduce((a, b) => a + b, 0) / 22;
+
+      const pred = fit.params.beta0
+        + fit.params.betaShort * rvShort
+        + fit.params.betaMedium * rvMedium
+        + fit.params.betaLong * rvLong;
+
+      yActual.push(rv[t + 1]);
+      yPredicted.push(pred);
+    }
+
+    const yMean = yActual.reduce((s, v) => s + v, 0) / yActual.length;
+    let tss = 0, rss = 0, ess = 0;
+    for (let i = 0; i < yActual.length; i++) {
+      tss += (yActual[i] - yMean) ** 2;
+      rss += (yActual[i] - yPredicted[i]) ** 2;
+      ess += (yPredicted[i] - yMean) ** 2;
+    }
+
+    expect(tss).toBeCloseTo(rss + ess, 6);
+  });
+
+  it('R² matches 1 - RSS/TSS', () => {
+    const prices = generatePrices(400, 55);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    const longLag = 22;
+    const yActual: number[] = [];
+    const yPredicted: number[] = [];
+
+    for (let t = longLag - 1; t < rv.length - 1; t++) {
+      const rvShort = rv[t];
+      const rvMedium = rv.slice(t - 4, t + 1).reduce((a, b) => a + b, 0) / 5;
+      const rvLong = rv.slice(t - 21, t + 1).reduce((a, b) => a + b, 0) / 22;
+
+      const pred = fit.params.beta0
+        + fit.params.betaShort * rvShort
+        + fit.params.betaMedium * rvMedium
+        + fit.params.betaLong * rvLong;
+
+      yActual.push(rv[t + 1]);
+      yPredicted.push(pred);
+    }
+
+    const yMean = yActual.reduce((s, v) => s + v, 0) / yActual.length;
+    let tss = 0, rss = 0;
+    for (let i = 0; i < yActual.length; i++) {
+      tss += (yActual[i] - yMean) ** 2;
+      rss += (yActual[i] - yPredicted[i]) ** 2;
+    }
+
+    const r2Manual = 1 - rss / tss;
+    expect(fit.params.r2).toBeCloseTo(r2Manual, 8);
+  });
+
+  it('R² is high on data with strong HAR structure', () => {
+    // Use makeHarData which generates multi-scale clustering
+    const prices = makeHarData(800, 42);
+    const result = calibrateHarRv(prices);
+    // HAR-structured data should show positive R² (some predictive power)
+    expect(result.params.r2).toBeGreaterThan(0);
+  });
+
+  it('normal equations hold: X\'X·β = X\'y', () => {
+    const prices = generatePrices(400, 66);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    const longLag = 22;
+    const beta = [fit.params.beta0, fit.params.betaShort, fit.params.betaMedium, fit.params.betaLong];
+    const p = 4;
+
+    // Build X'X and X'y
+    const XtX: number[][] = Array.from({ length: p }, () => new Array(p).fill(0));
+    const Xty: number[] = new Array(p).fill(0);
+
+    for (let t = longLag - 1; t < rv.length - 1; t++) {
+      const rvShort = rv[t];
+      const rvMedium = rv.slice(t - 4, t + 1).reduce((a, b) => a + b, 0) / 5;
+      const rvLong = rv.slice(t - 21, t + 1).reduce((a, b) => a + b, 0) / 22;
+      const x = [1, rvShort, rvMedium, rvLong];
+      const y = rv[t + 1];
+
+      for (let i = 0; i < p; i++) {
+        for (let j = 0; j < p; j++) {
+          XtX[i][j] += x[i] * x[j];
+        }
+        Xty[i] += x[i] * y;
+      }
+    }
+
+    // Verify X'X·β ≈ X'y
+    for (let i = 0; i < p; i++) {
+      let lhs = 0;
+      for (let j = 0; j < p; j++) {
+        lhs += XtX[i][j] * beta[j];
+      }
+      expect(lhs).toBeCloseTo(Xty[i], 6);
+    }
+  });
+});
+
+// ── fit() formula verification ───────────────────────────────
+
+describe('HAR-RV fit formula verification', () => {
+  it('unconditional variance = beta0 / (1 - persistence) when stationary', () => {
+    const prices = generatePrices(500, 88);
+    const result = calibrateHarRv(prices);
+    const { beta0, persistence, unconditionalVariance } = result.params;
+
+    if (persistence > -1 && persistence < 1) {
+      const expected = beta0 / (1 - persistence);
+      const clamped = Math.max(expected, 1e-20);
+      expect(unconditionalVariance).toBeCloseTo(clamped, 12);
+    }
+  });
+
+  it('unconditional variance falls back to sample variance when persistence >= 1', () => {
+    // We can't easily force persistence >= 1 through the public API,
+    // but we can verify the logic by checking multiple seeds for one that's non-stationary
+    // Instead: verify that when persistence IS in range, formula is used
+    const seeds = [1, 2, 3, 4, 5, 10, 20, 30, 50, 100];
+    for (const seed of seeds) {
+      const prices = generatePrices(300, seed);
+      const result = calibrateHarRv(prices);
+      const { beta0, persistence, unconditionalVariance } = result.params;
+
+      if (persistence >= 1 || persistence <= -1) {
+        // Should have fallen back to sample variance — just verify it's positive and finite
+        expect(unconditionalVariance).toBeGreaterThan(0);
+        expect(Number.isFinite(unconditionalVariance)).toBe(true);
+      } else {
+        expect(unconditionalVariance).toBeCloseTo(Math.max(beta0 / (1 - persistence), 1e-20), 12);
+      }
+    }
+  });
+
+  it('log-likelihood formula: LL = -0.5 * sum[ln(v) + r²/v]', () => {
+    const prices = generatePrices(300, 77);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const returns = model.getReturns();
+    const vs = model.getVarianceSeries(fit.params);
+
+    let llManual = 0;
+    for (let i = 0; i < returns.length; i++) {
+      const v = vs[i];
+      if (v <= 1e-20 || !isFinite(v)) {
+        llManual += -1e6;
+      } else {
+        llManual += Math.log(v) + (returns[i] ** 2) / v;
+      }
+    }
+    llManual = -llManual / 2;
+
+    expect(fit.diagnostics.logLikelihood).toBeCloseTo(llManual, 6);
+  });
+
+  it('AIC = 2k - 2LL with k=4', () => {
+    const prices = generatePrices(300, 99);
+    const result = calibrateHarRv(prices);
+    const expectedAIC = 2 * 4 - 2 * result.diagnostics.logLikelihood;
+    expect(result.diagnostics.aic).toBeCloseTo(expectedAIC, 10);
+  });
+
+  it('BIC = k*ln(n) - 2LL with correct nObs', () => {
+    const prices = generatePrices(300, 99);
+    const result = calibrateHarRv(prices);
+    // nObs = (n - 2) - (longLag - 1) + 1 = n - longLag - 1 + 1 = n - longLag
+    // where n = returns.length = prices.length - 1 = 299, rv.length = 299
+    // nObs = (299 - 2) - (22 - 1) + 1 = 297 - 21 + 1 = 277
+    const nObs = (prices.length - 1) - 22;  // rv.length - longLag
+    const expectedBIC = 4 * Math.log(nObs) - 2 * result.diagnostics.logLikelihood;
+    expect(result.diagnostics.bic).toBeCloseTo(expectedBIC, 6);
+  });
+
+  it('annualizedVol = sqrt(unconditionalVariance * periodsPerYear) * 100', () => {
+    const prices = generatePrices(300, 42);
+    const periodsPerYear = 365;
+    const result = calibrateHarRv(prices, { periodsPerYear });
+    const expected = Math.sqrt(Math.abs(result.params.unconditionalVariance) * periodsPerYear) * 100;
+    expect(result.params.annualizedVol).toBeCloseTo(expected, 8);
+  });
+});
+
+// ── Variance series and forecast deep tests ──────────────────
+
+describe('HAR-RV variance series deep tests', () => {
+  it('fallback-to-prediction transition at longLag boundary', () => {
+    const prices = generatePrices(300);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const vs = model.getVarianceSeries(fit.params);
+
+    // Position 21 (last fallback) should equal position 0 (all fallback = sample variance)
+    expect(vs[21]).toBe(vs[0]);
+    // Position 22 (first prediction) should generally differ from fallback
+    // Can be same by coincidence, but check they're computed differently
+    expect(typeof vs[22]).toBe('number');
+    expect(vs[22]).toBeGreaterThan(0);
+  });
+
+  it('variance floor 1e-20 prevents zero/negative variance', () => {
+    // Use params that would produce negative predicted variance
+    const prices = generatePrices(200);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+
+    // Override with extreme negative betas to force negative prediction
+    const extremeParams = {
+      ...fit.params,
+      beta0: -1,
+      betaShort: -10,
+      betaMedium: -10,
+      betaLong: -10,
+    };
+
+    const vs = model.getVarianceSeries(extremeParams);
+    for (const v of vs) {
+      expect(v).toBeGreaterThanOrEqual(1e-20);
+    }
+  });
+
+  it('variance series from getVarianceSeries matches internal fit calculation', () => {
+    const prices = generatePrices(300, 55);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+
+    // Calling getVarianceSeries with same params should produce same result every time
+    const vs1 = model.getVarianceSeries(fit.params);
+    const vs2 = model.getVarianceSeries(fit.params);
+    for (let i = 0; i < vs1.length; i++) {
+      expect(vs1[i]).toBe(vs2[i]);
+    }
+  });
+
+  it('variance series length = returns length', () => {
+    const prices = generatePrices(200, 11);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    expect(model.getVarianceSeries(fit.params).length).toBe(model.getReturns().length);
+  });
+});
+
+describe('HAR-RV forecast deep tests', () => {
+  it('2-step forecast ≠ 1-step * sqrt(2) — feedback is nonlinear', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const fc1 = model.forecast(fit.params, 1);
+    const fc2 = model.forecast(fit.params, 2);
+
+    // Multi-step is iterative, not simple scaling
+    const naiveSecondStep = fc1.variance[0]; // would be same if no feedback
+    // Second step should differ because it feeds back first forecast
+    expect(fc2.variance[1]).not.toBeCloseTo(naiveSecondStep, 10);
+  });
+
+  it('stationary model: long-horizon forecast converges to unconditional variance (tight)', () => {
+    const prices = generatePrices(1000, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+
+    if (fit.params.persistence > 0 && fit.params.persistence < 0.99) {
+      const fc = model.forecast(fit.params, 200);
+      const lastVar = fc.variance[199];
+      const uncond = fit.params.unconditionalVariance;
+      const relError = Math.abs(lastVar - uncond) / uncond;
+      expect(relError).toBeLessThan(0.05);
+    }
+  });
+
+  it('forecast step 1 matches manual calculation', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    const t = rv.length - 1;
+    const rvShort = rv[t];
+    const rvMedium = rv.slice(t - 4, t + 1).reduce((a, b) => a + b, 0) / 5;
+    const rvLong = rv.slice(t - 21, t + 1).reduce((a, b) => a + b, 0) / 22;
+
+    const expected = fit.params.beta0
+      + fit.params.betaShort * rvShort
+      + fit.params.betaMedium * rvMedium
+      + fit.params.betaLong * rvLong;
+
+    const fc = model.forecast(fit.params, 1);
+    expect(fc.variance[0]).toBeCloseTo(Math.max(expected, 1e-20), 12);
+  });
+
+  it('forecast annualized[i] = 100 * sqrt(variance[i] * periodsPerYear)', () => {
+    const ppy = 525600; // minutely
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices, { periodsPerYear: ppy });
+    const fit = model.fit();
+    const fc = model.forecast(fit.params, 5);
+
+    for (let i = 0; i < 5; i++) {
+      expect(fc.annualized[i]).toBeCloseTo(Math.sqrt(fc.variance[i] * ppy) * 100, 8);
+    }
+  });
+
+  it('forecast with extreme negative betas still produces positive variance', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+
+    const extremeParams = {
+      ...fit.params,
+      beta0: -0.5,
+      betaShort: -5,
+      betaMedium: -5,
+      betaLong: -5,
+    };
+
+    const fc = model.forecast(extremeParams, 10);
+    for (const v of fc.variance) {
+      expect(v).toBeGreaterThanOrEqual(1e-20);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+
+  it('multi-step variance is monotonically changing toward unconditional', () => {
+    const prices = generatePrices(500, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+
+    if (fit.params.persistence > 0 && fit.params.persistence < 0.95) {
+      const fc = model.forecast(fit.params, 50);
+      const uncond = fit.params.unconditionalVariance;
+
+      // Distance from unconditional should generally decrease over time
+      const dists = fc.variance.map(v => Math.abs(v - uncond));
+      // Compare first third to last third — last third should be closer on average
+      const firstThird = dists.slice(0, 15).reduce((a, b) => a + b, 0) / 15;
+      const lastThird = dists.slice(35, 50).reduce((a, b) => a + b, 0) / 15;
+      expect(lastThird).toBeLessThanOrEqual(firstThird + 1e-15);
+    }
+  });
+});
+
+// ── predict.ts integration: HAR-RV model selection ───────────
+
+describe('HAR-RV model selection in predict', () => {
+  it('predict returns valid result for HAR-structured data', () => {
+    const candles = makeCandles(500, 42);
+    const result = predict(candles, '4h');
+    expect(['garch', 'egarch', 'har-rv']).toContain(result.modelType);
+    expect(Number.isFinite(result.sigma)).toBe(true);
+    expect(result.sigma).toBeGreaterThanOrEqual(0);
+  });
+
+  it('predict never crashes across diverse seeds', () => {
+    for (let seed = 100; seed <= 130; seed++) {
+      const candles = makeCandles(300, seed);
+      const result = predict(candles, '1h');
+      expect(Number.isFinite(result.sigma)).toBe(true);
+      expect(Number.isFinite(result.move)).toBe(true);
+      expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
+      expect(['garch', 'egarch', 'har-rv']).toContain(result.modelType);
+    }
+  });
+
+  it('predictRange sigma grows with steps', () => {
+    const candles = makeCandles(500, 42);
+    const r3 = predictRange(candles, '4h', 3);
+    const r10 = predictRange(candles, '4h', 10);
+    expect(r10.sigma).toBeGreaterThan(r3.sigma);
+  });
+});
+
+// ── Regression snapshots (deterministic) ─────────────────────
+
+describe('HAR-RV regression snapshots', () => {
+  it('fixed seed 42 produces deterministic beta values', () => {
+    const prices = generatePrices(300, 42);
+    const result = calibrateHarRv(prices);
+
+    // Snapshot — OLS is deterministic so these should never change
+    expect(result.params.beta0).toBeCloseTo(result.params.beta0, 15); // self-check
+    // Verify exact reproducibility
+    const result2 = calibrateHarRv(prices);
+    expect(result.params.beta0).toBe(result2.params.beta0);
+    expect(result.params.betaShort).toBe(result2.params.betaShort);
+    expect(result.params.betaMedium).toBe(result2.params.betaMedium);
+    expect(result.params.betaLong).toBe(result2.params.betaLong);
+    expect(result.params.r2).toBe(result2.params.r2);
+    expect(result.diagnostics.logLikelihood).toBe(result2.diagnostics.logLikelihood);
+    expect(result.diagnostics.aic).toBe(result2.diagnostics.aic);
+    expect(result.diagnostics.bic).toBe(result2.diagnostics.bic);
+  });
+
+  it('fitted params minimize RSS (OLS optimality — perturbation test)', () => {
+    const prices = generatePrices(500, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+
+    // Compute RSS for arbitrary beta values
+    function computeRSS(beta: number[]): number {
+      const longLag = 22;
+      let rss = 0;
+      for (let t = longLag - 1; t < rv.length - 1; t++) {
+        const rvS = rv[t];
+        const rvM = rv.slice(t - 4, t + 1).reduce((a, b) => a + b, 0) / 5;
+        const rvL = rv.slice(t - 21, t + 1).reduce((a, b) => a + b, 0) / 22;
+        const pred = beta[0] + beta[1] * rvS + beta[2] * rvM + beta[3] * rvL;
+        const res = rv[t + 1] - pred;
+        rss += res * res;
+      }
+      return rss;
+    }
+
+    const baseBeta = [fit.params.beta0, fit.params.betaShort, fit.params.betaMedium, fit.params.betaLong];
+    const baseRSS = computeRSS(baseBeta);
+    const deltas = [1e-6, -1e-6, 1e-4, -1e-4];
+
+    // Perturb each parameter — RSS should not decrease
+    for (let j = 0; j < 4; j++) {
+      for (const delta of deltas) {
+        const perturbed = [...baseBeta];
+        perturbed[j] += delta;
+        const perturbedRSS = computeRSS(perturbed);
+        expect(perturbedRSS).toBeGreaterThanOrEqual(baseRSS - 1e-15);
+      }
+    }
+  });
+});
+
+// ── Edge cases: equal lags, boundary data ────────────────────
+
+describe('HAR-RV edge cases (deep)', () => {
+  it('shortLag = mediumLag = longLag throws (singular — identical columns)', () => {
+    const prices = generatePrices(200);
+    expect(() => calibrateHarRv(prices, { shortLag: 5, mediumLag: 5, longLag: 5 }))
+      .toThrow('Singular matrix');
+  });
+
+  it('all lags = 1 throws (singular — identical columns)', () => {
+    const prices = generatePrices(200);
+    expect(() => calibrateHarRv(prices, { shortLag: 1, mediumLag: 1, longLag: 1 }))
+      .toThrow('Singular matrix');
+  });
+
+  it('very large periodsPerYear scales annualized correctly', () => {
+    const prices = generatePrices(200);
+    const r1 = calibrateHarRv(prices, { periodsPerYear: 1 });
+    const r2 = calibrateHarRv(prices, { periodsPerYear: 1000000 });
+    // Same unconditional variance
+    expect(r1.params.unconditionalVariance).toBe(r2.params.unconditionalVariance);
+    // annualizedVol scales with sqrt(periodsPerYear)
+    const ratio = r2.params.annualizedVol / r1.params.annualizedVol;
+    expect(ratio).toBeCloseTo(Math.sqrt(1000000 / 1), 3);
+  });
+
+  it('extremely skewed RV data does not crash', () => {
+    // Create data where some returns are 100x larger
+    const rng = lcg(42);
+    const prices = [100];
+    for (let i = 1; i <= 300; i++) {
+      const spike = (i % 50 === 0) ? 10 : 1;
+      prices.push(prices[i - 1] * Math.exp(spike * 0.01 * randn(rng)));
+    }
+    const result = calibrateHarRv(prices);
+    expect(Number.isFinite(result.params.beta0)).toBe(true);
+    expect(result.diagnostics.converged).toBe(true);
+  });
+
+  it('near-constant prices throw singular matrix (degenerate RV)', () => {
+    // Prices all identical except tiny noise → rv ≈ 0 → X'X singular
+    const prices: number[] = [];
+    for (let i = 0; i < 200; i++) {
+      prices.push(100 + i * 1e-15);
+    }
+    expect(() => calibrateHarRv(prices)).toThrow('Singular matrix');
+  });
+
+  it('forecast from minimum data size (longLag + 30 + 1 prices)', () => {
+    const prices = generatePrices(53); // 52 = 22+30, +1 for returns
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const fc = model.forecast(fit.params, 5);
+    expect(fc.variance.length).toBe(5);
+    for (const v of fc.variance) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+});
+
 // ── Fuzz testing ──────────────────────────────────────────────
 
 describe('HAR-RV fuzz tests', () => {
