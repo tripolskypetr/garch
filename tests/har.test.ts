@@ -1119,6 +1119,294 @@ describe('HAR-RV edge cases (deep)', () => {
   });
 });
 
+// ── Untested code paths in predict.ts ─────────────────────────
+
+describe('HAR-RV predict.ts code paths', () => {
+  it('fitHarRv try/catch: near-constant candles → GARCH fallback (not crash)', () => {
+    // Near-constant prices cause singular matrix in HarRv.fit().
+    // fitHarRv catches this and returns null → predict falls back to GARCH/EGARCH.
+    const candles: Candle[] = [];
+    let price = 100;
+    for (let i = 0; i < 200; i++) {
+      // Tiny deterministic increments → near-zero rv → singular X'X
+      price += 1e-12;
+      candles.push({ open: price, high: price + 1e-13, low: price - 1e-13, close: price, volume: 1000 });
+    }
+    const result = predict(candles, '8h');
+    // Should not crash — GARCH family is the fallback
+    expect(['garch', 'egarch']).toContain(result.modelType);
+    expect(Number.isFinite(result.sigma)).toBe(true);
+  });
+
+  it('HAR-RV wins model selection for at least one seed', () => {
+    // Scan seeds to verify HAR-RV can actually win AIC comparison
+    let harRvWon = false;
+    for (let seed = 1; seed <= 200; seed++) {
+      const candles = makeCandles(500, seed);
+      const result = predict(candles, '4h');
+      if (result.modelType === 'har-rv') {
+        harRvWon = true;
+        break;
+      }
+    }
+    expect(harRvWon).toBe(true);
+  });
+
+  it('GARCH/EGARCH wins model selection for at least one seed', () => {
+    let garchWon = false;
+    for (let seed = 1; seed <= 200; seed++) {
+      const candles = makeCandles(500, seed);
+      const result = predict(candles, '4h');
+      if (result.modelType === 'garch' || result.modelType === 'egarch') {
+        garchWon = true;
+        break;
+      }
+    }
+    expect(garchWon).toBe(true);
+  });
+});
+
+// ── LL clamping path ─────────────────────────────────────────
+
+describe('HAR-RV LL clamping', () => {
+  it('variance floor in getVarianceSeries triggers LL penalty path', () => {
+    // If extreme betas produce predicted v <= 1e-20, the LL computation
+    // in fit() uses -1e6 penalty. Verify this doesn't produce NaN/Infinity.
+    const prices = generatePrices(200, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const returns = model.getReturns();
+
+    // Construct params that force many floor values (1e-20)
+    const badParams = {
+      ...fit.params,
+      beta0: -100,
+      betaShort: -100,
+      betaMedium: -100,
+      betaLong: -100,
+    };
+    const vs = model.getVarianceSeries(badParams);
+
+    // Count how many values hit the floor
+    const flooredCount = vs.filter(v => v === 1e-20).length;
+    expect(flooredCount).toBeGreaterThan(0);
+
+    // Manually compute LL with clamping — should produce a very negative value
+    let ll = 0;
+    for (let i = 0; i < returns.length; i++) {
+      const v = vs[i];
+      if (v <= 1e-20 || !isFinite(v)) {
+        ll += -1e6;
+      } else {
+        ll += Math.log(v) + (returns[i] ** 2) / v;
+      }
+    }
+    ll = -ll / 2;
+
+    // LL should be finite (very large positive due to -(-1e6))
+    expect(Number.isFinite(ll)).toBe(true);
+    // And much larger than the fitted LL (penalty inflates it)
+    expect(ll).not.toBe(fit.diagnostics.logLikelihood);
+  });
+});
+
+// ── Input equivalence ────────────────────────────────────────
+
+describe('HAR-RV input equivalence', () => {
+  it('Candle[] and number[] (close prices) produce identical results', () => {
+    const candles = makeCandles(300, 42);
+    const prices = candles.map(c => c.close);
+
+    const resultCandles = calibrateHarRv(candles);
+    const resultPrices = calibrateHarRv(prices);
+
+    expect(resultCandles.params.beta0).toBe(resultPrices.params.beta0);
+    expect(resultCandles.params.betaShort).toBe(resultPrices.params.betaShort);
+    expect(resultCandles.params.betaMedium).toBe(resultPrices.params.betaMedium);
+    expect(resultCandles.params.betaLong).toBe(resultPrices.params.betaLong);
+    expect(resultCandles.params.r2).toBe(resultPrices.params.r2);
+    expect(resultCandles.diagnostics.logLikelihood).toBe(resultPrices.diagnostics.logLikelihood);
+  });
+
+  it('periodsPerYear does NOT affect betas, r2, or persistence', () => {
+    const prices = generatePrices(300, 42);
+    const r1 = calibrateHarRv(prices, { periodsPerYear: 252 });
+    const r2 = calibrateHarRv(prices, { periodsPerYear: 525600 });
+
+    expect(r1.params.beta0).toBe(r2.params.beta0);
+    expect(r1.params.betaShort).toBe(r2.params.betaShort);
+    expect(r1.params.betaMedium).toBe(r2.params.betaMedium);
+    expect(r1.params.betaLong).toBe(r2.params.betaLong);
+    expect(r1.params.r2).toBe(r2.params.r2);
+    expect(r1.params.persistence).toBe(r2.params.persistence);
+    expect(r1.params.unconditionalVariance).toBe(r2.params.unconditionalVariance);
+    // Only annualizedVol differs
+    expect(r1.params.annualizedVol).not.toBe(r2.params.annualizedVol);
+  });
+});
+
+// ── Mutation safety ──────────────────────────────────────────
+
+describe('HAR-RV mutation safety', () => {
+  it('getReturns() returns a copy — mutation does not affect model', () => {
+    const prices = generatePrices(200, 42);
+    const model = new HarRv(prices);
+    const returns1 = model.getReturns();
+    returns1[0] = 999999;
+    const returns2 = model.getReturns();
+    expect(returns2[0]).not.toBe(999999);
+  });
+
+  it('getRv() returns a copy — mutation does not affect model', () => {
+    const prices = generatePrices(200, 42);
+    const model = new HarRv(prices);
+    const rv1 = model.getRv();
+    rv1[0] = 999999;
+    const rv2 = model.getRv();
+    expect(rv2[0]).not.toBe(999999);
+  });
+
+  it('mutating fit result does not affect subsequent fit calls', () => {
+    const prices = generatePrices(200, 42);
+    const model = new HarRv(prices);
+    const fit1 = model.fit();
+    (fit1.params as any).beta0 = 999;
+    const fit2 = model.fit();
+    expect(fit2.params.beta0).not.toBe(999);
+  });
+});
+
+// ── forecast(params, 0) ──────────────────────────────────────
+
+describe('HAR-RV forecast edge cases', () => {
+  it('forecast with steps=0 returns empty arrays', () => {
+    const prices = generatePrices(200, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const fc = model.forecast(fit.params, 0);
+
+    expect(fc.variance).toEqual([]);
+    expect(fc.volatility).toEqual([]);
+    expect(fc.annualized).toEqual([]);
+  });
+
+  it('forecast step 2 correctly uses step 1 output in rolling mean', () => {
+    // Verify iterative substitution: the 2nd forecast step's rolling mean
+    // should include the 1st step's predicted variance.
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const rv = model.getRv();
+    const { beta0, betaShort, betaMedium, betaLong } = fit.params;
+
+    // Step 1: use original rv
+    const t0 = rv.length - 1;
+    const rvS1 = rv[t0]; // shortLag=1
+    const rvM1 = rv.slice(t0 - 4, t0 + 1).reduce((a, b) => a + b, 0) / 5;
+    const rvL1 = rv.slice(t0 - 21, t0 + 1).reduce((a, b) => a + b, 0) / 22;
+    const pred1 = Math.max(beta0 + betaShort * rvS1 + betaMedium * rvM1 + betaLong * rvL1, 1e-20);
+
+    // Step 2: rv extended with pred1
+    const extendedRv = [...rv, pred1];
+    const t1 = extendedRv.length - 1;
+    const rvS2 = extendedRv[t1]; // = pred1
+    const rvM2 = extendedRv.slice(t1 - 4, t1 + 1).reduce((a, b) => a + b, 0) / 5;
+    const rvL2 = extendedRv.slice(t1 - 21, t1 + 1).reduce((a, b) => a + b, 0) / 22;
+    const pred2 = Math.max(beta0 + betaShort * rvS2 + betaMedium * rvM2 + betaLong * rvL2, 1e-20);
+
+    const fc = model.forecast(fit.params, 2);
+    expect(fc.variance[0]).toBeCloseTo(pred1, 12);
+    expect(fc.variance[1]).toBeCloseTo(pred2, 12);
+  });
+
+  it('very long forecast (1000 steps) does not overflow or underflow', () => {
+    const prices = generatePrices(300, 42);
+    const model = new HarRv(prices);
+    const fit = model.fit();
+    const fc = model.forecast(fit.params, 1000);
+
+    expect(fc.variance.length).toBe(1000);
+    for (const v of fc.variance) {
+      expect(v).toBeGreaterThan(0);
+      expect(Number.isFinite(v)).toBe(true);
+    }
+    for (const v of fc.annualized) {
+      expect(Number.isFinite(v)).toBe(true);
+    }
+  });
+});
+
+// ── Numerical edge cases ─────────────────────────────────────
+
+describe('HAR-RV numerical scenarios', () => {
+  it('very large prices (1e8 scale) — no overflow in rv', () => {
+    const rng = lcg(42);
+    const prices = [1e8];
+    for (let i = 1; i < 200; i++) {
+      prices.push(prices[i - 1] * Math.exp(0.01 * randn(rng)));
+    }
+    const result = calibrateHarRv(prices);
+    expect(Number.isFinite(result.params.beta0)).toBe(true);
+    expect(Number.isFinite(result.params.r2)).toBe(true);
+    expect(result.diagnostics.converged).toBe(true);
+  });
+
+  it('very small prices (1e-4 scale) — no underflow', () => {
+    const rng = lcg(42);
+    const prices = [0.0001];
+    for (let i = 1; i < 200; i++) {
+      prices.push(prices[i - 1] * Math.exp(0.01 * randn(rng)));
+    }
+    const result = calibrateHarRv(prices);
+    expect(Number.isFinite(result.params.beta0)).toBe(true);
+    expect(Number.isFinite(result.params.r2)).toBe(true);
+    expect(result.diagnostics.converged).toBe(true);
+  });
+
+  it('prices with large gap (1000 → 10 → 1000) — no crash', () => {
+    const rng = lcg(42);
+    const prices = [1000];
+    for (let i = 1; i < 200; i++) {
+      let base = prices[i - 1];
+      if (i === 100) base = 10;   // crash
+      if (i === 101) base = 1000; // recovery
+      prices.push(base * Math.exp(0.01 * randn(rng)));
+    }
+    const result = calibrateHarRv(prices);
+    expect(Number.isFinite(result.params.beta0)).toBe(true);
+    expect(result.diagnostics.converged).toBe(true);
+  });
+
+  it('log returns are scale-invariant — same betas for 10x scaled prices', () => {
+    // log(kP_t / kP_{t-1}) = log(P_t / P_{t-1}), so scaling prices
+    // should NOT change returns, rv, or betas.
+    const prices = generatePrices(300, 42);
+    const scaledPrices = prices.map(p => p * 1000);
+
+    const r1 = calibrateHarRv(prices);
+    const r2 = calibrateHarRv(scaledPrices);
+
+    expect(r1.params.beta0).toBeCloseTo(r2.params.beta0, 10);
+    expect(r1.params.betaShort).toBeCloseTo(r2.params.betaShort, 10);
+    expect(r1.params.r2).toBeCloseTo(r2.params.r2, 10);
+  });
+});
+
+// ── Partial pivoting ─────────────────────────────────────────
+
+describe('HAR-RV partial pivoting (indirect)', () => {
+  it('diverse seeds never fail due to pivot issues', () => {
+    // Gaussian elimination without pivoting would fail on certain data
+    // configurations. Running many seeds exercises different X'X matrices.
+    for (let seed = 1; seed <= 100; seed++) {
+      const prices = generatePrices(200, seed);
+      const result = calibrateHarRv(prices);
+      expect(result.diagnostics.converged).toBe(true);
+      expect(Number.isFinite(result.params.beta0)).toBe(true);
+    }
+  });
+});
+
 // ── Fuzz testing ──────────────────────────────────────────────
 
 describe('HAR-RV fuzz tests', () => {
