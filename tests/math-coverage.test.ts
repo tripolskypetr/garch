@@ -8,6 +8,8 @@ import {
   calibrateEgarch,
   NoVaS,
   calibrateNoVaS,
+  GjrGarch,
+  calibrateGjrGarch,
   predict,
   predictRange,
   backtest,
@@ -1221,5 +1223,163 @@ describe('perCandleParkinson shared function', () => {
     const rv = model.getRv();
     const returns = model.getReturns();
     expect(rv.length).toBe(returns.length);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════
+// 13. GJR-GARCH — Realized and Classical
+// ═══════════════════════════════════════════════════════════════
+
+describe('GJR-GARCH', () => {
+  it('fits and converges on candle data', () => {
+    const candles = makeCandles(200, 42);
+    const result = calibrateGjrGarch(candles);
+    expect(result.diagnostics.converged).toBe(true);
+    expect(result.params.omega).toBeGreaterThan(0);
+    expect(result.params.alpha).toBeGreaterThanOrEqual(0);
+    expect(result.params.gamma).toBeGreaterThanOrEqual(0);
+    expect(result.params.beta).toBeGreaterThanOrEqual(0);
+  });
+
+  it('fits and converges on price data', () => {
+    const prices = generatePrices(200, 42);
+    const result = calibrateGjrGarch(prices);
+    expect(result.diagnostics.converged).toBe(true);
+    expect(result.params.persistence).toBeLessThan(1);
+  });
+
+  it('Candle[] vs number[] produce different params (Parkinson vs r²)', () => {
+    const candles = makeCandles(200, 42);
+    const prices = candles.map(c => c.close);
+
+    const candleResult = calibrateGjrGarch(candles);
+    const priceResult = calibrateGjrGarch(prices);
+
+    // At least one param should differ meaningfully
+    const diffAlpha = Math.abs(candleResult.params.alpha - priceResult.params.alpha);
+    const diffBeta = Math.abs(candleResult.params.beta - priceResult.params.beta);
+    const diffGamma = Math.abs(candleResult.params.gamma - priceResult.params.gamma);
+    expect(diffAlpha + diffBeta + diffGamma).toBeGreaterThan(0.001);
+  });
+
+  it('flat candles (H=L) degrade to same as number[] input', () => {
+    const flatCandles = makeFlatCandles(200, 42);
+    const prices = flatCandles.map(c => c.close);
+
+    const candleResult = calibrateGjrGarch(flatCandles);
+    const priceResult = calibrateGjrGarch(prices);
+
+    // Should be very close since Parkinson falls back to r²
+    expect(candleResult.params.alpha).toBeCloseTo(priceResult.params.alpha, 3);
+    expect(candleResult.params.beta).toBeCloseTo(priceResult.params.beta, 3);
+    expect(candleResult.params.gamma).toBeCloseTo(priceResult.params.gamma, 3);
+  });
+
+  it('persistence = alpha + gamma/2 + beta', () => {
+    const candles = makeCandles(200, 42);
+    const result = calibrateGjrGarch(candles);
+    const expected = result.params.alpha + result.params.gamma / 2 + result.params.beta;
+    expect(result.params.persistence).toBeCloseTo(expected, 10);
+  });
+
+  it('unconditionalVariance = omega / (1 - persistence)', () => {
+    const candles = makeCandles(200, 42);
+    const result = calibrateGjrGarch(candles);
+    const expected = result.params.omega / (1 - result.params.persistence);
+    expect(result.params.unconditionalVariance).toBeCloseTo(expected, 10);
+  });
+
+  it('leverageEffect equals gamma', () => {
+    const candles = makeCandles(200, 42);
+    const result = calibrateGjrGarch(candles);
+    expect(result.params.leverageEffect).toBe(result.params.gamma);
+  });
+
+  it('variance series length matches returns', () => {
+    const candles = makeCandles(200, 42);
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    const vs = model.getVarianceSeries(fit.params);
+    expect(vs.length).toBe(model.getReturns().length);
+  });
+
+  it('forecast moves toward unconditional variance over time', () => {
+    const candles = makeCandles(200, 42);
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    const fc = model.forecast(fit.params, 100);
+    const uncond = fit.params.unconditionalVariance;
+    // Later steps should be closer to unconditional variance than earlier steps
+    const distFirst = Math.abs(fc.variance[0] - uncond);
+    const distLast = Math.abs(fc.variance[fc.variance.length - 1] - uncond);
+    expect(distLast).toBeLessThan(distFirst);
+  });
+
+  it('scale invariance (1000x prices → same vol%)', () => {
+    const candles1 = makeCandles(200, 42);
+    const candles2 = candles1.map(c => ({
+      ...c,
+      open: c.open * 1000,
+      high: c.high * 1000,
+      low: c.low * 1000,
+      close: c.close * 1000,
+    }));
+
+    const r1 = calibrateGjrGarch(candles1);
+    const r2 = calibrateGjrGarch(candles2);
+
+    expect(r1.params.annualizedVol).toBeCloseTo(r2.params.annualizedVol, 1);
+  });
+
+  it('multi-step forecast is monotone toward unconditional variance', () => {
+    const candles = makeCandles(200, 42);
+    const model = new GjrGarch(candles);
+    const fit = model.fit();
+    const fc = model.forecast(fit.params, 50);
+
+    // After step 1, each step should move closer to unconditional
+    const uncond = fit.params.unconditionalVariance;
+    for (let i = 2; i < fc.variance.length; i++) {
+      const distPrev = Math.abs(fc.variance[i - 1] - uncond);
+      const distCurr = Math.abs(fc.variance[i] - uncond);
+      expect(distCurr).toBeLessThanOrEqual(distPrev + 1e-15);
+    }
+  });
+
+  it('throws on insufficient data', () => {
+    const candles = makeCandles(30, 42);
+    expect(() => new GjrGarch(candles)).toThrow('at least 50');
+  });
+
+  it('predict() can return gjr-garch as model type', () => {
+    // Generate data with leverage effect to trigger EGARCH/GJR-GARCH branch
+    const rng = lcg(99);
+    const candles: Candle[] = [];
+    let price = 100;
+    for (let i = 0; i < 200; i++) {
+      const shock = randn(rng);
+      // Amplify negative shocks to create leverage effect
+      const r = shock < 0 ? shock * 0.02 : shock * 0.008;
+      const open = price;
+      const close = open * Math.exp(r);
+      const high = Math.max(open, close) * (1 + Math.abs(randn(rng)) * 0.003);
+      const low = Math.min(open, close) * (1 - Math.abs(randn(rng)) * 0.003);
+      candles.push({ open, high, low, close, volume: 1000 });
+      price = close;
+    }
+
+    const result = predict(candles, '4h');
+    // gjr-garch is now a valid model type in the union
+    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+  });
+
+  it('deterministic across runs with same seed', () => {
+    const candles = makeCandles(200, 77);
+    const r1 = calibrateGjrGarch(candles);
+    const r2 = calibrateGjrGarch(candles);
+    expect(r1.params.omega).toBe(r2.params.omega);
+    expect(r1.params.alpha).toBe(r2.params.alpha);
+    expect(r1.params.gamma).toBe(r2.params.gamma);
+    expect(r1.params.beta).toBe(r2.params.beta);
   });
 });

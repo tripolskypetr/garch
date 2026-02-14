@@ -2,6 +2,7 @@
 export { Garch, calibrateGarch, type GarchOptions } from './garch.js';
 export { Egarch, calibrateEgarch, type EgarchOptions } from './egarch.js';
 export { HarRv, calibrateHarRv, type HarRvOptions } from './har.js';
+export { GjrGarch, calibrateGjrGarch, type GjrGarchOptions } from './gjr-garch.js';
 export { NoVaS, calibrateNoVaS, type NoVaSOptions } from './novas.js';
 
 // Utilities
@@ -35,6 +36,7 @@ export type {
   Candle,
   GarchParams,
   EgarchParams,
+  GjrGarchParams,
   HarRvParams,
   NoVaSParams,
   CalibrationResult,

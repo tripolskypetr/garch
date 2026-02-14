@@ -27,6 +27,17 @@ export interface EgarchParams {
   leverageEffect: number;
 }
 
+export interface GjrGarchParams {
+  omega: number;
+  alpha: number;
+  gamma: number;
+  beta: number;
+  persistence: number;
+  unconditionalVariance: number;
+  annualizedVol: number;
+  leverageEffect: number;
+}
+
 export interface CalibrationResult<T> {
   params: T;
   diagnostics: {

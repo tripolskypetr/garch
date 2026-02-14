@@ -1,6 +1,7 @@
 import type { Candle, VolatilityForecast } from './types.js';
 import { Garch } from './garch.js';
 import { Egarch } from './egarch.js';
+import { GjrGarch } from './gjr-garch.js';
 import { HarRv } from './har.js';
 import { NoVaS } from './novas.js';
 import { calculateReturnsFromPrices, checkLeverageEffect, ljungBox } from './utils.js';
@@ -39,7 +40,7 @@ export interface PredictionResult {
   move: number;
   upperPrice: number;
   lowerPrice: number;
-  modelType: 'garch' | 'egarch' | 'har-rv' | 'novas';
+  modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
   reliable: boolean;
 }
 
@@ -52,7 +53,7 @@ function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
 
 interface FitResult {
   forecast: VolatilityForecast;
-  modelType: 'garch' | 'egarch' | 'har-rv' | 'novas';
+  modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
   converged: boolean;
   persistence: number;
   varianceSeries: number[];
@@ -64,17 +65,32 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
   const leverage = checkLeverageEffect(returns);
 
   if (leverage.recommendation === 'egarch') {
-    const model = new Egarch(candles, { periodsPerYear });
-    const fit = model.fit();
-    return {
-      forecast: model.forecast(fit.params, steps),
+    // Leverage detected — fit both EGARCH and GJR-GARCH, pick lower AIC
+    const egarchModel = new Egarch(candles, { periodsPerYear });
+    const egarchFit = egarchModel.fit();
+    const egarchResult: FitResult & { aic: number } = {
+      forecast: egarchModel.forecast(egarchFit.params, steps),
       modelType: 'egarch',
-      converged: fit.diagnostics.converged,
-      persistence: fit.params.persistence,
-      varianceSeries: model.getVarianceSeries(fit.params),
-      returns: model.getReturns(),
-      aic: fit.diagnostics.aic,
+      converged: egarchFit.diagnostics.converged,
+      persistence: egarchFit.params.persistence,
+      varianceSeries: egarchModel.getVarianceSeries(egarchFit.params),
+      returns: egarchModel.getReturns(),
+      aic: egarchFit.diagnostics.aic,
     };
+
+    const gjrModel = new GjrGarch(candles, { periodsPerYear });
+    const gjrFit = gjrModel.fit();
+    const gjrResult: FitResult & { aic: number } = {
+      forecast: gjrModel.forecast(gjrFit.params, steps),
+      modelType: 'gjr-garch',
+      converged: gjrFit.diagnostics.converged,
+      persistence: gjrFit.params.persistence,
+      varianceSeries: gjrModel.getVarianceSeries(gjrFit.params),
+      returns: gjrModel.getReturns(),
+      aic: gjrFit.diagnostics.aic,
+    };
+
+    return gjrResult.aic < egarchResult.aic ? gjrResult : egarchResult;
   }
 
   const model = new Garch(candles, { periodsPerYear });

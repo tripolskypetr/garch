@@ -4,7 +4,7 @@
 
 <p align="center">
   <strong>Missing volatility forecast for NodeJS</strong><br>
-  Realized GARCH, Realized EGARCH, HAR-RV and NoVaS<br>
+  Realized GARCH, Realized EGARCH, Realized GJR-GARCH, HAR-RV and NoVaS<br>
   models for TypeScript. Zero dependencies.
 </p>
 
@@ -18,7 +18,7 @@ npm install garch
 
 ### `predict(candles, interval, currentPrice?)`
 
-Forecast expected price range for the next candle (t+1). Auto-selects GARCH, EGARCH, HAR-RV or NoVaS based on leverage effect and AIC comparison. Returns a +-1 sigma price corridor.
+Forecast expected price range for the next candle (t+1). Auto-selects GARCH, EGARCH, GJR-GARCH, HAR-RV or NoVaS based on leverage effect and AIC comparison. Returns a +-1 sigma price corridor.
 
 ```typescript
 import { predict } from 'garch';
@@ -58,7 +58,7 @@ interface PredictionResult {
   move: number;                   // +/- price move = currentPrice * sigma
   upperPrice: number;             // currentPrice + move
   lowerPrice: number;             // currentPrice - move
-  modelType: 'garch' | 'egarch' | 'har-rv' | 'novas'; // Auto-selected model
+  modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas'; // Auto-selected model
   reliable: boolean;              // Quality flag (convergence + persistence + Ljung-Box)
 }
 ```
@@ -215,6 +215,35 @@ Where **z_t = epsilon_t / sigma_t** is the standardized residual, **sqrt(2/pi) ~
 - Stationarity: **|beta| < 1**
 - Unconditional variance: **E[sigma^2] ~ exp(omega / (1 - beta))**
 
+### GJR-GARCH(1,1)
+
+Threshold GARCH (Glosten, Jagannathan & Runkle, 1993). Captures leverage effect in variance space (unlike EGARCH which uses log-variance). Input type determines the innovation term automatically:
+
+**Candle[] input** — Realized GJR-GARCH. Uses Parkinson RV as innovation, return sign as leverage indicator:
+
+```
+sigma_t^2 = omega + alpha * RV_{t-1} + gamma * RV_{t-1} * I(r_{t-1}<0) + beta * sigma_{t-1}^2
+```
+
+**number[] input** — Classical GJR-GARCH. Uses squared returns:
+
+```
+sigma_t^2 = omega + alpha * epsilon_{t-1}^2 + gamma * epsilon_{t-1}^2 * I(r_{t-1}<0) + beta * sigma_{t-1}^2
+```
+
+Where **I(r<0) = 1** when return is negative, **0** otherwise.
+
+- **gamma** >= 0 — leverage coefficient (bad news amplifies variance by extra gamma)
+- **omega** > 0, **alpha** >= 0, **beta** >= 0
+- Stationarity: **alpha + gamma/2 + beta < 1** (half of innovations are negative on average)
+- Unconditional variance: **E[sigma^2] = omega / (1 - alpha - gamma/2 - beta)**
+
+Multi-step forecast uses effective persistence = alpha + gamma/2 + beta:
+
+```
+sigma_{t+h}^2 = omega + (alpha + gamma/2 + beta) * sigma_{t+h-1}^2
+```
+
 ### HAR-RV
 
 Heterogeneous Autoregressive model of Realized Variance (Corsi, 2009). Captures multi-scale volatility clustering via three overlapping horizons:
@@ -292,22 +321,22 @@ sigma_{t+h}^2 = a_0 + sum_j a_j * E[innovation_{t+h-j}]
 
 `predict` and `predictRange` fit three pipelines in parallel and pick the winner by AIC:
 
-1. **GARCH-family pipeline**: compute leverage ratio (negative vol / positive vol). If ratio > 1.2 — fit EGARCH, otherwise fit GARCH
+1. **GARCH-family pipeline**: compute leverage ratio (negative vol / positive vol). If ratio > 1.2 — fit both EGARCH and GJR-GARCH, return lower AIC. Otherwise fit GARCH
 2. **HAR-RV pipeline**: fit HAR-RV via OLS. Skip if persistence >= 1 or R^2 < 0
 3. **NoVaS pipeline**: fit NoVaS via D^2 minimization. Skip if persistence >= 1
 4. Compare AIC of all pipelines. Lowest AIC wins
 
 ```
 fitModel()
-  |-- fitGarchFamily() --> GARCH or EGARCH --> AIC_1
-  |-- fitHarRv()       --> HAR-RV (OLS)    --> AIC_2
-  |-- fitNoVaS()       --> NoVaS (D²)      --> AIC_3
+  |-- fitGarchFamily() --> GARCH or min(EGARCH, GJR-GARCH) --> AIC_1
+  |-- fitHarRv()       --> HAR-RV (OLS)                     --> AIC_2
+  |-- fitNoVaS()       --> NoVaS (D²)                       --> AIC_3
   \-- return min(AIC_1, AIC_2, AIC_3)
 ```
 
-When given `Candle[]`, all four OHLC-aware models (GARCH, EGARCH, HAR-RV, NoVaS) use Parkinson per-candle RV instead of squared returns, extracting ~5× more information from the same data.
+When given `Candle[]`, all five OHLC-aware models (GARCH, EGARCH, GJR-GARCH, HAR-RV, NoVaS) use Parkinson per-candle RV instead of squared returns, extracting ~5× more information from the same data.
 
-GARCH/EGARCH tends to win on data with pronounced shock reactions or leverage effects. HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). NoVaS tends to win on short, volatile data where parametric assumptions break down.
+GARCH/EGARCH/GJR-GARCH tends to win on data with pronounced shock reactions or leverage effects. HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). NoVaS tends to win on short, volatile data where parametric assumptions break down.
 
 ### Variance Estimators
 
@@ -337,7 +366,7 @@ The `reliable` flag in `PredictionResult` is `true` when all three conditions ho
 
 ### Optimization
 
-GARCH/EGARCH parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step). NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
+GARCH/EGARCH/GJR-GARCH parameters are estimated via **Nelder-Mead** simplex method (derivative-free). Default: 1000 iterations, tolerance 1e-8. HAR-RV uses **OLS** (exact solution in one step). NoVaS uses **Nelder-Mead** with 2000 iterations to minimize D^2. Model comparison uses **AIC** (2k - 2LL) and **BIC** (k*ln(n) - 2LL).
 
 For AIC comparison across all models, log-likelihoods are computed using the same Gaussian formulation over the return series:
 
@@ -349,12 +378,12 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 
 ## Tests
 
-**764 tests** across **21 test files**. All passing.
+**778 tests** across **21 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
 | Mathematical formulas | `math.test.ts` | 45 | GARCH/EGARCH variance recursion, log-likelihood, forecast formulas, AIC/BIC, Yang-Zhang, Garman-Klass, Ljung-Box, chi-squared |
-| Math coverage | `math-coverage.test.ts` | 65 | Parkinson formula verification, rv↔returns alignment, H=L fallback, Parkinson-based forecast, candle validation, reliable flag cascade, backtest validity, numerical precision, cross-model consistency, Realized GARCH/EGARCH Candle[] vs number[], perCandleParkinson shared function |
+| Math coverage | `math-coverage.test.ts` | 79 | Parkinson formula verification, rv↔returns alignment, H=L fallback, Parkinson-based forecast, candle validation, reliable flag cascade, backtest validity, numerical precision, cross-model consistency, Realized GARCH/EGARCH/GJR-GARCH Candle[] vs number[], perCandleParkinson shared function |
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
