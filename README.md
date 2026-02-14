@@ -336,7 +336,19 @@ fitModel()
 
 When given `Candle[]`, all five OHLC-aware models (GARCH, EGARCH, GJR-GARCH, HAR-RV, NoVaS) use Parkinson per-candle RV instead of squared returns, extracting ~5× more information from the same data.
 
-GARCH/EGARCH/GJR-GARCH tends to win on data with pronounced shock reactions or leverage effects. HAR-RV tends to win on data with strong multi-scale clustering (e.g. crypto, FX). NoVaS tends to win on short, volatile data where parametric assumptions break down.
+### When Each Model Wins
+
+The library fits all five models on every call and picks the best by AIC. Here's what patterns in data favor each:
+
+- **GARCH** — Volatility spikes after any big move (up or down equally), then gradually fades back to normal. No difference between bullish and bearish shocks. Classic symmetric mean-reverting vol clustering.
+
+- **EGARCH** — Drops hit harder than pumps. A -5% candle causes way more volatility than a +5% candle. Strong "fear > greed" asymmetry. Works through a log-variance model so the asymmetry coefficient `gamma * z` directly amplifies negative shocks. Typical for stocks and BTC during risk-off periods.
+
+- **GJR-GARCH** — Same idea as EGARCH (red candles increase vol more than green ones) but the effect is milder and simpler: when the return is negative, a bonus term `gamma * epsilon^2` is added to variance. When positive — nothing extra. A binary switch rather than a continuous asymmetry. Common in altcoins and less panic-prone markets.
+
+- **HAR-RV** — Volatility has memory at multiple horizons. The model takes a single timeframe of candles and internally builds three scales: last candle's RV (short, lag 1), rolling average over 5 candles (medium), and rolling average over 22 candles (long). These three components are combined via OLS regression. Works well when different types of participants (scalpers, swing traders, institutions) all influence the same market at different speeds. If your asset has visible "rhythm" across day/week/month — HAR-RV will likely beat GARCH family (sideways, daily patterns).
+
+- **NoVaS** — Volatility drifts or cycles without clear shock-and-decay patterns. Slow trend changes, regime shifts, compression/expansion phases, or "breathing" patterns that don't fit any parametric formula. Model-free: finds weights `a_0...a_p` that make the normalized series as close to Gaussian as possible (minimizes D^2 = skewness^2 + (kurtosis - 3)^2). No assumptions about the distribution shape.
 
 ### Variance Estimators
 
