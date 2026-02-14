@@ -135,7 +135,9 @@ function rollingMean(rv: number[], t: number, lag: number): number {
  * - RV_short  = mean(rv[t-s+1..t])  (default s=1)
  * - RV_medium = mean(rv[t-m+1..t])  (default m=5)
  * - RV_long   = mean(rv[t-l+1..t])  (default l=22)
- * - rv[t] = r[t]² (squared return as realized variance proxy)
+ * - rv[t] = Parkinson(candle_t) for OHLC data, r[t]² for prices-only
+ *
+ * Parkinson (1980): RV = (1/(4·ln2))·(ln(H/L))², ~5x more efficient than r².
  *
  * Uses OLS for estimation — closed-form, always converges.
  */
@@ -161,12 +163,23 @@ export class HarRv {
 
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
+      // Prices only — no OHLC, fall back to squared returns
+      this.rv = this.returns.map(r => r * r);
     } else {
-      this.returns = calculateReturns(data as Candle[]);
+      const candles = data as Candle[];
+      this.returns = calculateReturns(candles);
+      // Parkinson (1980) per-candle RV: (1/(4·ln2))·(ln(H/L))²
+      // rv[i] aligned with returns[i], using candle[i+1]'s OHLC
+      const coeff = 1 / (4 * Math.LN2);
+      this.rv = [];
+      for (let i = 0; i < this.returns.length; i++) {
+        const c = candles[i + 1];
+        const hl = Math.log(c.high / c.low);
+        const parkinson = coeff * hl * hl;
+        // Fall back to r² if high === low (zero range)
+        this.rv.push(parkinson > 0 ? parkinson : this.returns[i] * this.returns[i]);
+      }
     }
-
-    // RV proxy: squared returns
-    this.rv = this.returns.map(r => r * r);
   }
 
   /**

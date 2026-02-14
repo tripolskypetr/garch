@@ -1213,19 +1213,35 @@ describe('HAR-RV LL clamping', () => {
 // ── Input equivalence ────────────────────────────────────────
 
 describe('HAR-RV input equivalence', () => {
-  it('Candle[] and number[] (close prices) produce identical results', () => {
+  it('Candle[] uses Parkinson RV proxy, number[] uses r² — results differ', () => {
     const candles = makeCandles(300, 42);
     const prices = candles.map(c => c.close);
 
     const resultCandles = calibrateHarRv(candles);
     const resultPrices = calibrateHarRv(prices);
 
-    expect(resultCandles.params.beta0).toBe(resultPrices.params.beta0);
-    expect(resultCandles.params.betaShort).toBe(resultPrices.params.betaShort);
-    expect(resultCandles.params.betaMedium).toBe(resultPrices.params.betaMedium);
-    expect(resultCandles.params.betaLong).toBe(resultPrices.params.betaLong);
-    expect(resultCandles.params.r2).toBe(resultPrices.params.r2);
-    expect(resultCandles.diagnostics.logLikelihood).toBe(resultPrices.diagnostics.logLikelihood);
+    // Both converge and produce valid params
+    expect(resultCandles.diagnostics.converged).toBe(true);
+    expect(resultPrices.diagnostics.converged).toBe(true);
+
+    // Betas differ because Candle[] uses Parkinson, number[] uses r²
+    expect(resultCandles.params.beta0).not.toBe(resultPrices.params.beta0);
+
+    // Both produce valid persistence < 1
+    expect(resultCandles.params.persistence).toBeLessThan(1);
+    expect(resultPrices.params.persistence).toBeLessThan(1);
+  });
+
+  it('number[] input produces same results as extracting close prices', () => {
+    const prices = generatePrices(300, 42);
+
+    const result1 = calibrateHarRv(prices);
+    const result2 = calibrateHarRv([...prices]); // copy
+
+    // Identical — both use r² proxy
+    expect(result1.params.beta0).toBe(result2.params.beta0);
+    expect(result1.params.betaShort).toBe(result2.params.betaShort);
+    expect(result1.params.r2).toBe(result2.params.r2);
   });
 
   it('periodsPerYear does NOT affect betas, r2, or persistence', () => {

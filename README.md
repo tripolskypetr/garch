@@ -204,7 +204,12 @@ Heterogeneous Autoregressive model of Realized Variance (Corsi, 2009). Captures 
 RV_{t+1} = beta_0 + beta_1 * RV_short + beta_2 * RV_medium + beta_3 * RV_long + epsilon
 ```
 
-Where **RV_t = r_t^2** (squared return as realized variance proxy):
+Where **RV_t** is the per-candle realized variance proxy:
+
+- **OHLC input** — Parkinson (1980): **RV_t = (1 / (4·ln2)) · ln(H/L)^2** (~5× more efficient than close-to-close)
+- **Prices-only input** — squared return: **RV_t = r_t^2** (fallback when no OHLC available)
+
+Classic HAR-RV uses sum of intraday squared returns, but that requires tick/minute data. Parkinson uses the high-low range of each candle as a variance proxy — no intraday data needed.
 
 - **RV_short** = mean(RV_t) — last 1 period (default)
 - **RV_medium** = mean(RV_{t-4} ... RV_t) — last 5 periods
@@ -312,7 +317,7 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 
 ## Tests
 
-**623 tests** across **19 test files**. All passing.
+**647 tests** across **19 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
@@ -320,8 +325,8 @@ where sigma_t^2 comes from the GARCH conditional variance, HAR-RV fitted varianc
 | Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison via AIC |
-| HAR-RV unit | `har.test.ts` | 137 | OLS regression, R^2, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict, OLS orthogonality, TSS=RSS+ESS, normal equations, regression snapshots, mutation safety |
-| NoVaS unit | `novas.test.ts` | 86 | D^2 minimization, normality improvement, variance series, forecast convergence, edge cases, fuzz, integration with predict, determinism, scale invariance |
+| HAR-RV unit | `har.test.ts` | 138 | OLS regression, R^2, Parkinson RV proxy, forecast convergence, multi-step iterative substitution, rolling RV components, edge cases, fuzz, integration with predict, OLS orthogonality, TSS=RSS+ESS, normal equations, regression snapshots, mutation safety |
+| NoVaS unit | `novas.test.ts` | 109 | D^2 minimization, normality improvement, variance series, forecast convergence, edge cases, fuzz, integration with predict, determinism, scale invariance |
 | Optimizer | `optimizer.test.ts`, `optimizer-shrink.test.ts` | 16 | Nelder-Mead on Rosenbrock/quadratic/parabolic, convergence, shrinking |
 | Statistical properties | `properties.test.ts` | 13 | Parameter recovery from synthetic data, local LL maximum, unconditional variance |
 | Regression | `regression.test.ts` | 9 | Parameter recovery, deterministic outputs |
