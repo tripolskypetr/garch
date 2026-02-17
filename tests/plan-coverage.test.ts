@@ -554,12 +554,12 @@ describe('backtest edge cases', () => {
 
   it('0% threshold always returns true', () => {
     const candles = makeCandles(250, 1003);
-    expect(backtest(candles, '4h', 0)).toBe(true);
+    expect(backtest(candles, '4h', undefined, 0)).toBe(true);
   });
 
   it('100% threshold returns false on noisy data', () => {
     const candles = makeCandles(250, 1004);
-    expect(backtest(candles, '4h', 1)).toBe(false);
+    expect(backtest(candles, '4h', undefined, 100)).toBe(false);
   });
 
   it('throws for 15m with < 300 candles', () => {
@@ -805,14 +805,14 @@ describe('backtest on known GARCH DGP', () => {
     const candles = generateGarchCandles(350, 0.00001, 0.08, 0.88, 5555);
     // With true GARCH data, ±1σ should capture ~68% of moves
     // Use a lower threshold (50%) to account for finite sample + estimation error
-    const result = backtest(candles, '4h', 0.50);
+    const result = backtest(candles, '4h', undefined, 50);
     expect(result).toBe(true);
   });
 
   it('fails at 99% threshold on any realistic data', () => {
     const candles = generateGarchCandles(350, 0.00001, 0.08, 0.88, 6666);
     // 99% hit rate is unrealistic for ±1σ corridor
-    const result = backtest(candles, '4h', 0.99);
+    const result = backtest(candles, '4h', undefined, 99);
     expect(result).toBe(false);
   });
 });

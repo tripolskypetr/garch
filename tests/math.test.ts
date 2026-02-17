@@ -735,9 +735,9 @@ describe('backtest', () => {
   it('accepts custom requiredPercent', () => {
     const candles = makeCandles(250);
     // With 0% threshold, should always pass
-    expect(backtest(candles, '4h', 0)).toBe(true);
+    expect(backtest(candles, '4h', undefined, 0)).toBe(true);
     // With 100% threshold, very unlikely to pass
-    expect(backtest(candles, '4h', 1)).toBe(false);
+    expect(backtest(candles, '4h', undefined, 100)).toBe(false);
   });
 });
 

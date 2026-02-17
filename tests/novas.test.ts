@@ -738,7 +738,7 @@ describe('NoVaS integration with predict', () => {
 
   it('backtest still works', () => {
     const candles = makeCandles(500, 42);
-    const result = backtest(candles, '4h', 0.50);
+    const result = backtest(candles, '4h', undefined, 50);
     expect(typeof result).toBe('boolean');
   });
 

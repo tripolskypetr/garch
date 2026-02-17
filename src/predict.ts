@@ -295,17 +295,19 @@ const BACKTEST_WINDOW_RATIO = 0.75;
  * Window is computed automatically: 75% of candles for fitting, 25% for testing.
  * Throws if not enough candles for the given interval.
  * Returns true if the model's hit rate meets the required threshold.
- * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
- *   Used for both the prediction band and the pass/fail threshold.
+ * @param confidence — two-sided probability in (0,1) for the prediction band.
+ *   Default ≈0.6827 (±1σ).
+ * @param requiredPercent — minimum hit rate (0–100) to pass. Default 68.
  */
 export function backtest(
   candles: Candle[],
   interval: CandleInterval,
   confidence = 0.6827,
+  requiredPercent = 68,
 ): boolean {
   assertMinCandles(candles, interval);
-  if (confidence <= 0) return true;
-  if (confidence >= 1) return false;
+  if (requiredPercent <= 0) return true;
+  if (requiredPercent >= 100) return false;
 
   const window = Math.max(MIN_CANDLES[interval], Math.floor(candles.length * BACKTEST_WINDOW_RATIO));
   let hits = 0;
@@ -322,6 +324,6 @@ export function backtest(
     total++;
   }
 
-  return hits / total >= confidence;
+  return (hits / total) * 100 >= requiredPercent;
 }
 

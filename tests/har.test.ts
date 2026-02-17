@@ -455,7 +455,7 @@ describe('HAR-RV integration with predict', () => {
   it('backtest still works with HAR-RV in the mix', () => {
     const candles = makeCandles(500, 42);
     // Should not throw
-    const result = backtest(candles, '4h', 0.50);
+    const result = backtest(candles, '4h', undefined, 50);
     expect(typeof result).toBe('boolean');
   });
 
@@ -1659,13 +1659,13 @@ describe('HAR-RV backtest', () => {
     // backtest returns true if hit rate >= requiredPercent.
     // With requiredPercent=0, it should always return true (> 0% hits).
     const candles = makeCandles(500, 42);
-    expect(backtest(candles, '4h', 0)).toBe(true);
+    expect(backtest(candles, '4h', undefined, 0)).toBe(true);
   });
 
   it('backtest hit rate is < 100% (model is not perfect)', () => {
     // With requiredPercent=100, model should fail (not every move within ±1σ)
     const candles = makeCandles(500, 42);
-    expect(backtest(candles, '4h', 1)).toBe(false);
+    expect(backtest(candles, '4h', undefined, 100)).toBe(false);
   });
 
   it('backtest result is deterministic', () => {
