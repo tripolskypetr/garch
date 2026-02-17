@@ -737,7 +737,7 @@ describe('backtest', () => {
     // With 0% threshold, should always pass
     expect(backtest(candles, '4h', 0)).toBe(true);
     // With 100% threshold, very unlikely to pass
-    expect(backtest(candles, '4h', 100)).toBe(false);
+    expect(backtest(candles, '4h', 1)).toBe(false);
   });
 });
 

@@ -8,6 +8,7 @@ import {
   studentTNegLL,
   type Candle,
 } from '../src/index.js';
+import { probit } from '../src/utils.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -410,10 +411,11 @@ describe('HAR-RV integration with predict', () => {
     expect(result.lowerPrice).toBeLessThan(result.currentPrice);
   });
 
-  it('move = currentPrice * sigma', () => {
+  it('move = currentPrice * (exp(z*sigma) - 1)', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    expect(result.move).toBeCloseTo(result.currentPrice * result.sigma, 10);
+    const z = probit(0.6827);
+    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(z * result.sigma) - 1), 10);
   });
 
   it('predictRange cumulative sigma > single-step sigma', () => {
@@ -453,7 +455,7 @@ describe('HAR-RV integration with predict', () => {
   it('backtest still works with HAR-RV in the mix', () => {
     const candles = makeCandles(500, 42);
     // Should not throw
-    const result = backtest(candles, '4h', 50);
+    const result = backtest(candles, '4h', 0.50);
     expect(typeof result).toBe('boolean');
   });
 
@@ -461,7 +463,8 @@ describe('HAR-RV integration with predict', () => {
     const candles = makeCandles(300, 42);
     const result = predict(candles, '4h', 50000);
     expect(result.currentPrice).toBe(50000);
-    expect(result.move).toBeCloseTo(50000 * result.sigma, 5);
+    const z = probit(0.6827);
+    expect(result.move).toBeCloseTo(50000 * (Math.exp(z * result.sigma) - 1), 5);
   });
 });
 
@@ -1662,7 +1665,7 @@ describe('HAR-RV backtest', () => {
   it('backtest hit rate is < 100% (model is not perfect)', () => {
     // With requiredPercent=100, model should fail (not every move within ±1σ)
     const candles = makeCandles(500, 42);
-    expect(backtest(candles, '4h', 100)).toBe(false);
+    expect(backtest(candles, '4h', 1)).toBe(false);
   });
 
   it('backtest result is deterministic', () => {

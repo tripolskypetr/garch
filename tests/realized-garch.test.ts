@@ -1035,7 +1035,10 @@ describe('predict fallback when NoVaS fails', () => {
     // Forecast corridor must be well-formed
     expect(result.move).toBeGreaterThanOrEqual(0);
     expect(result.upperPrice).toBeCloseTo(result.currentPrice + result.move, 8);
-    expect(result.lowerPrice).toBeCloseTo(result.currentPrice - result.move, 8);
+    // log-normal bands are asymmetric: ln(upper/P) = -ln(lower/P)
+    const logUp = Math.log(result.upperPrice / result.currentPrice);
+    const logDown = Math.log(result.lowerPrice / result.currentPrice);
+    expect(logUp).toBeCloseTo(-logDown, 8);
   });
 });
 

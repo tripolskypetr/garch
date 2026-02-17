@@ -287,7 +287,6 @@ export function predictRange(
 
 // ── Backtest ──────────────────────────────────────────────────
 
-const BACKTEST_REQUIRED_PERCENT = 68;
 const BACKTEST_WINDOW_RATIO = 0.75;
 
 /**
@@ -296,14 +295,17 @@ const BACKTEST_WINDOW_RATIO = 0.75;
  * Window is computed automatically: 75% of candles for fitting, 25% for testing.
  * Throws if not enough candles for the given interval.
  * Returns true if the model's hit rate meets the required threshold.
- * Default threshold is 68% (±1σ should contain ~68% of moves).
+ * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
+ *   Used for both the prediction band and the pass/fail threshold.
  */
 export function backtest(
   candles: Candle[],
   interval: CandleInterval,
-  requiredPercent = BACKTEST_REQUIRED_PERCENT,
+  confidence = 0.6827,
 ): boolean {
   assertMinCandles(candles, interval);
+  if (confidence <= 0) return true;
+  if (confidence >= 1) return false;
 
   const window = Math.max(MIN_CANDLES[interval], Math.floor(candles.length * BACKTEST_WINDOW_RATIO));
   let hits = 0;
@@ -311,7 +313,7 @@ export function backtest(
 
   for (let i = window; i < candles.length - 1; i++) {
     const slice = candles.slice(i - window, i + 1);
-    const predicted = predict(slice, interval);
+    const predicted = predict(slice, interval, slice[slice.length - 1].close, confidence);
     const actual = candles[i + 1].close;
 
     if (actual >= predicted.lowerPrice && actual <= predicted.upperPrice) {
@@ -320,6 +322,6 @@ export function backtest(
     total++;
   }
 
-  return (hits / total) * 100 >= requiredPercent;
+  return hits / total >= confidence;
 }
 
