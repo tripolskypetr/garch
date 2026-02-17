@@ -556,13 +556,13 @@ where RV_t is Parkinson per-candle realized variance and sigma_t^2 is the model'
 
 ## Tests
 
-**923 tests** across **22 test files**. All passing.
+**932 tests** across **22 test files**. All passing.
 
 | Category | Files | Tests | What's covered |
 |----------|-------|-------|----------------|
 | Mathematical formulas | `math.test.ts` | 45 | GARCH/EGARCH variance recursion, log-likelihood, forecast formulas, AIC/BIC, QLIKE, Yang-Zhang, Garman-Klass, Ljung-Box, chi-squared |
 | Math coverage | `math-coverage.test.ts` | 79 | Parkinson formula verification, rv↔returns alignment, H=L fallback, Parkinson-based forecast, candle validation, reliable flag cascade, backtest validity, numerical precision, cross-model consistency, Realized GARCH/EGARCH/GJR-GARCH Candle[] vs number[], perCandleParkinson shared function |
-| Full pipeline coverage | `plan-coverage.test.ts` | 73 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
+| Full pipeline coverage | `plan-coverage.test.ts` | 82 | End-to-end: fit, forecast, predict, predictRange, backtest, model selection |
 | GARCH unit | `garch.test.ts` | 10 | Parameter estimation, variance series, forecast convergence, candle vs price input |
 | EGARCH unit | `egarch.test.ts` | 11 | Leverage detection, asymmetric volatility, model comparison |
 | GJR-GARCH unit | `gjr-garch.test.ts` | 86 | Variance recursion (r² and Parkinson), indicator function I(r<0), forecast formula (one-step + multi-step), constraint barriers, computed fields, AIC/BIC numParams=5, estimation properties (perturbation, determinism), numerical stability, degenerate params, Realized path (Candle[] vs number[], flat candles, bad OHLC), options forwarding, immutability, instance isolation, cross-model consistency, scale invariance, property-based fuzz, predict/predictRange/backtest integration |
