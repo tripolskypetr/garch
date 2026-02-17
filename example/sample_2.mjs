@@ -1,4 +1,4 @@
-import { predict, predictRange, backtest } from 'garch';
+import { predict, predictRange, backtest } from '../build/index.mjs';
 
 // ── RNG helpers ──
 function lcg(seed) {

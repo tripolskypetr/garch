@@ -1,4 +1,4 @@
-import { predict } from 'garch';
+import { predict } from '../build/index.mjs';
 
 // ── RNG ──
 function lcg(seed) {

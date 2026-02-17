@@ -1,4 +1,4 @@
-import { predict, predictRange, backtest } from 'garch';
+import { predict, predictRange, backtest } from '../build/index.mjs';
 
 function lcg(seed) {
   let s = seed;
