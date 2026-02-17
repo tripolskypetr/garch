@@ -696,20 +696,20 @@ describe('reliable flag conditions', () => {
 
 describe('backtest validity', () => {
   it('backtest hit rate correlates with ±1σ theory (~68%)', () => {
-    // Default confidence=0.6827 (±1σ): band and threshold are coupled
+    // With ±1σ band (default) and threshold 50%, backtest should pass (68% > 50%)
     const candles = makeCandles(500, 42);
-    expect(typeof backtest(candles, '4h')).toBe('boolean');
+    expect(backtest(candles, '4h', undefined, 50)).toBe(true);
   });
 
   it('backtest with 100% threshold always fails', () => {
     // No model predicts perfectly
     const candles = makeCandles(500, 42);
-    expect(backtest(candles, '4h', 1)).toBe(false);
+    expect(backtest(candles, '4h', undefined, 100)).toBe(false);
   });
 
   it('backtest with 0% threshold always passes', () => {
     const candles = makeCandles(500, 42);
-    expect(backtest(candles, '4h', 0)).toBe(true);
+    expect(backtest(candles, '4h', undefined, 0)).toBe(true);
   });
 
   it('backtest is deterministic', () => {
@@ -722,7 +722,7 @@ describe('backtest validity', () => {
   it('backtest runs across multiple seeds without crash', () => {
     for (let seed = 1; seed <= 10; seed++) {
       const candles = makeCandles(500, seed);
-      const result = backtest(candles, '4h', 0.50);
+      const result = backtest(candles, '4h', undefined, 50);
       expect(typeof result).toBe('boolean');
     }
   });
@@ -733,8 +733,8 @@ describe('backtest validity', () => {
     const candles500 = makeCandles(500, 42);
     const candles300 = makeCandles(300, 42);
 
-    const r500 = backtest(candles500, '4h', 0.50);
-    const r300 = backtest(candles300, '4h', 0.50);
+    const r500 = backtest(candles500, '4h', undefined, 50);
+    const r300 = backtest(candles300, '4h', undefined, 50);
 
     expect(typeof r500).toBe('boolean');
     expect(typeof r300).toBe('boolean');
@@ -744,9 +744,9 @@ describe('backtest validity', () => {
     const candles = makeCandles(500, 42);
 
     // Should work for all intervals with enough data
-    expect(typeof backtest(candles, '15m', 0.50)).toBe('boolean');
-    expect(typeof backtest(candles, '1h', 0.50)).toBe('boolean');
-    expect(typeof backtest(candles, '4h', 0.50)).toBe('boolean');
+    expect(typeof backtest(candles, '15m', undefined, 50)).toBe('boolean');
+    expect(typeof backtest(candles, '1h', undefined, 50)).toBe('boolean');
+    expect(typeof backtest(candles, '4h', undefined, 50)).toBe('boolean');
   });
 
   it('backtest predictions have correct structure within walk-forward', () => {
