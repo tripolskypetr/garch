@@ -16,9 +16,11 @@ npm install garch
 
 ## API
 
-### `predict(candles, interval, currentPrice?)`
+### `predict(candles, interval, currentPrice?, confidence?)`
 
-Forecast expected price range for the next candle (t+1). Auto-selects the best model (GARCH, EGARCH, GJR-GARCH, HAR-RV or NoVaS) by QLIKE forecast-error comparison. Returns a +-1 sigma price corridor.
+Forecast expected price range for the next candle (t+1). Auto-selects the best model (GARCH, EGARCH, GJR-GARCH, HAR-RV or NoVaS) by QLIKE forecast-error comparison.
+
+Uses **log-normal price bands**: `P·exp(±z·σ)`, where `z = probit(confidence)`. This correctly maps log-return volatility back to price space — the corridor is asymmetric (upside > downside in absolute terms) and `lowerPrice` can never go negative.
 
 ```typescript
 import { predict } from 'garch';
@@ -26,20 +28,33 @@ import type { Candle } from 'garch';
 
 const candles: Candle[] = await fetchCandles('BTCUSDT', '4h', 200);
 
+// Default: ±1σ band (~68% coverage)
 const result = predict(candles, '4h');
 // {
 //   currentPrice: 97500,
-//   sigma: 0.012,          // 1.2% expected move
-//   move: 1170,            // +/-$1170 price range
-//   upperPrice: 98670,     // ceiling for next candle
-//   lowerPrice: 96330,     // floor for next candle
+//   sigma: 0.012,          // 1.2% per-period volatility
+//   move: 1177,            // upward expected move (upper - current)
+//   upperPrice: 98677,     // P·exp(+σ) — ceiling
+//   lowerPrice: 96337,     // P·exp(-σ) — floor
 //   modelType: 'egarch',
 //   reliable: true
 // }
 
-// Pass VWAP or any reference price as 3rd argument
+// 95% VaR band (z ≈ 1.96)
+const var95 = predict(candles, '4h', undefined, 0.95);
+
+// Custom reference price (e.g. VWAP)
 const result = predict(candles, '4h', vwap);
 ```
+
+**Confidence → z mapping:**
+
+| `confidence` | z-score | Meaning |
+|-------------|---------|---------|
+| 0.6827 (default) | 1.00 | ±1σ, ~68% of moves captured |
+| 0.90 | 1.645 | Moderate VaR |
+| 0.95 | 1.96 | 95% VaR (standard) |
+| 0.99 | 2.576 | Conservative VaR |
 
 **Parameters:**
 
@@ -48,6 +63,7 @@ const result = predict(candles, '4h', vwap);
 | `candles` | `Candle[]` | required | OHLCV candle data |
 | `interval` | `CandleInterval` | required | Candle timeframe |
 | `currentPrice` | `number` | last close | Reference price to center the corridor |
+| `confidence` | `number` | `0.6827` | Two-sided probability in (0,1). Controls band width via `z = probit(confidence)` |
 
 **Returns:** `PredictionResult`
 
@@ -55,9 +71,9 @@ const result = predict(candles, '4h', vwap);
 interface PredictionResult {
   currentPrice: number;           // Reference price
   sigma: number;                  // One-period volatility (decimal, e.g. 0.012 = 1.2%)
-  move: number;                   // +/- price move = currentPrice * sigma
-  upperPrice: number;             // currentPrice + move
-  lowerPrice: number;             // currentPrice - move
+  move: number;                   // Upward price move = upperPrice - currentPrice
+  upperPrice: number;             // P · exp(+z·σ)
+  lowerPrice: number;             // P · exp(-z·σ)
   modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas'; // Auto-selected model
   reliable: boolean;              // Quality flag (convergence + persistence + Ljung-Box)
 }
@@ -65,9 +81,9 @@ interface PredictionResult {
 
 ---
 
-### `predictRange(candles, interval, steps, currentPrice?)`
+### `predictRange(candles, interval, steps, currentPrice?, confidence?)`
 
-Forecast cumulative expected price range over multiple candles. Cumulative sigma = sqrt(sigma_1^2 + sigma_2^2 + ... + sigma_n^2). Use for swing trades where you hold across multiple periods.
+Forecast cumulative expected price range over multiple candles. Cumulative sigma = sqrt(sigma_1^2 + sigma_2^2 + ... + sigma_n^2). Uses the same log-normal bands as `predict`. Use for swing trades where you hold across multiple periods.
 
 ```typescript
 import { predictRange } from 'garch';
@@ -76,12 +92,15 @@ const range = predictRange(candles, '4h', 5);
 // {
 //   currentPrice: 97500,
 //   sigma: 0.027,           // cumulative ~2.7% over 5 candles
-//   move: 2632,             // +/-$2632 total range
-//   upperPrice: 100132,
-//   lowerPrice: 94868,
+//   move: 2669,             // upward expected move
+//   upperPrice: 100169,     // P·exp(+z·σ)
+//   lowerPrice: 94901,      // P·exp(-z·σ)
 //   modelType: 'egarch',
 //   reliable: true
 // }
+
+// 95% VaR over 5 candles
+const var95 = predictRange(candles, '4h', 5, undefined, 0.95);
 ```
 
 **Parameters:**
@@ -92,20 +111,25 @@ const range = predictRange(candles, '4h', 5);
 | `interval` | `CandleInterval` | required | Candle timeframe |
 | `steps` | `number` | required | Number of candles to forecast over |
 | `currentPrice` | `number` | last close | Reference price |
+| `confidence` | `number` | `0.6827` | Two-sided probability in (0,1) |
 
 **Returns:** `PredictionResult` (same structure as `predict`)
 
 ---
 
-### `backtest(candles, interval, requiredPercent?)`
+### `backtest(candles, interval, confidence?, requiredPercent?)`
 
-Walk-forward validation of `predict`. Uses 75% of candles for fitting, 25% for testing. Checks if the model's +-1 sigma corridor captures actual price moves at the required hit rate.
+Walk-forward validation of `predict`. Uses 75% of candles for fitting, 25% for testing. Checks if the model's price corridor captures actual price moves at the required hit rate.
+
+`confidence` and `requiredPercent` are independent: `confidence` controls the **band width** (via `probit`), `requiredPercent` controls the **pass/fail threshold**.
 
 ```typescript
 import { backtest } from 'garch';
 
-backtest(candles, '4h');     // true  -- hit rate >= 68% (default)
-backtest(candles, '4h', 50); // true  -- hit rate >= 50% (custom)
+backtest(candles, '4h');                   // ±1σ band, hit rate >= 68%
+backtest(candles, '4h', 0.95);            // 95% VaR band, hit rate >= 68%
+backtest(candles, '4h', 0.95, 90);        // 95% VaR band, hit rate >= 90%
+backtest(candles, '4h', undefined, 50);   // ±1σ band, hit rate >= 50%
 ```
 
 **Parameters:**
@@ -114,7 +138,8 @@ backtest(candles, '4h', 50); // true  -- hit rate >= 50% (custom)
 |-----------|------|---------|-------------|
 | `candles` | `Candle[]` | required | OHLCV candle data |
 | `interval` | `CandleInterval` | required | Candle timeframe |
-| `requiredPercent` | `number` | `68` | Minimum hit rate (+-1 sigma ~ 68% theoretically) |
+| `confidence` | `number` | `0.6827` | Two-sided probability in (0,1) for the prediction band |
+| `requiredPercent` | `number` | `68` | Minimum hit rate (0–100) to pass |
 
 **Returns:** `boolean`
 
@@ -401,6 +426,69 @@ sigma^2_GK = (1/n) * sum[ 0.5 * ln(H/L)^2 - (2*ln2 - 1) * ln(C/O)^2 ]
 ```
 
 ~5x more efficient than close-to-close variance.
+
+### Log-Normal Price Bands
+
+GARCH models volatility of **log-returns**, not absolute price changes. The correct mapping from log-return volatility back to price space uses the exponential:
+
+```
+upperPrice = P · exp(+z · sigma)
+lowerPrice = P · exp(-z · sigma)
+```
+
+where `z = probit(confidence)` is the z-score corresponding to the desired two-sided confidence level. This produces **asymmetric** bands (upside > downside in absolute terms) and guarantees `lowerPrice > 0`.
+
+The previous linear approximation `P · (1 ± sigma)` is a first-order Taylor expansion of `exp(±sigma)`. The difference grows with sigma:
+
+| sigma | Linear `1 + sigma` | Exact `exp(sigma)` | Error |
+|-------|--------------------|--------------------|-------|
+| 0.02 | 1.0200 | 1.0202 | ~0.01% |
+| 0.10 | 1.1000 | 1.1052 | ~0.5% |
+| 0.30 | 1.3000 | 1.3499 | ~3.8% |
+
+### Probit (Inverse Normal CDF)
+
+`probit(confidence)` computes the inverse of the standard normal CDF (Phi^{-1}). It converts a two-sided probability to a z-score:
+
+```
+confidence = P(-z < Z < z),  Z ~ N(0,1)
+z = probit(confidence)
+```
+
+There is no closed-form solution for Phi^{-1} — it is a transcendental equation. The implementation uses **Acklam's rational approximation** (Peter J. Acklam, 2002) with max relative error < 1.15 x 10^{-9}.
+
+**Step 1** — convert two-sided confidence to upper-tail probability:
+
+```
+p = (1 + confidence) / 2
+```
+
+**Step 2** — piecewise rational approximation over three regions:
+
+**Central region** (0.02425 <= p <= 0.97575) — covers ~95% of inputs:
+
+```
+q = p - 0.5
+r = q^2
+z = (a1·r^5 + a2·r^4 + a3·r^3 + a4·r^2 + a5·r + a6) · q
+    / (b1·r^5 + b2·r^4 + b3·r^3 + b4·r^2 + b5·r + 1)
+```
+
+**Tails** (p < 0.02425 or p > 0.97575):
+
+```
+q = sqrt(-2·ln(p))          // left tail
+z = (c1·q^5 + ... + c6) / (d1·q^4 + ... + 1)
+```
+
+For the right tail: `q = sqrt(-2·ln(1-p))`, result is negated. The 16 coefficients (a1–a6, b1–b5, c1–c6, d1–d4) are minimax-optimal rational approximation constants.
+
+| `confidence` | `p` | `z` | Meaning |
+|-------------|-----|-----|---------|
+| 0.6827 | 0.8413 | 1.000 | ±1 sigma (default) |
+| 0.90 | 0.9500 | 1.645 | Moderate VaR |
+| 0.95 | 0.9750 | 1.960 | 95% VaR |
+| 0.99 | 0.9950 | 2.576 | Conservative VaR |
 
 ### Student-t Log-Likelihood
 
