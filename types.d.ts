@@ -501,26 +501,31 @@ interface PredictionResult {
 /**
  * Forecast expected price range for t+1 (next candle).
  *
- * Auto-selects GARCH or EGARCH based on leverage effect.
- * Returns ±1σ price corridor so you can set SL/TP yourself.
+ * Auto-selects the best volatility model via QLIKE.
+ * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
+ *   Common values: 0.90 → z=1.645, 0.95 → z=1.96, 0.99 → z=2.576.
  */
-declare function predict(candles: Candle[], interval: CandleInterval, currentPrice?: number): PredictionResult;
+declare function predict(candles: Candle[], interval: CandleInterval, currentPrice?: number, confidence?: number): PredictionResult;
 /**
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Use for swing trades where you hold across multiple candles.
+ * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
-declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number): PredictionResult;
+declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number, confidence?: number): PredictionResult;
 /**
  * Walk-forward backtest of predict.
  *
  * Window is computed automatically: 75% of candles for fitting, 25% for testing.
  * Throws if not enough candles for the given interval.
  * Returns true if the model's hit rate meets the required threshold.
- * Default threshold is 68% (±1σ should contain ~68% of moves).
+ * @param confidence — two-sided probability in (0,1) for the prediction band.
+ *   Default ≈0.6827 (±1σ).
+ * @param requiredPercent — minimum hit rate (0–100) to pass. Default 68.
  */
-declare function backtest(candles: Candle[], interval: CandleInterval, requiredPercent?: number): boolean;
+declare function backtest(candles: Candle[], interval: CandleInterval, confidence?: number, requiredPercent?: number): boolean;
 
 declare function nelderMead(fn: (x: number[]) => number, x0: number[], options?: {
     maxIter?: number;
