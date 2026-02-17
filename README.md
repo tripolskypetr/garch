@@ -56,6 +56,22 @@ const result = predict(candles, '4h', vwap);
 | 0.95 | 1.96 | 95% VaR (standard) |
 | 0.99 | 2.576 | Conservative VaR |
 
+Any value in (0, 1) is valid — the table above lists common choices, but `probit` computes z for arbitrary confidence.
+
+Higher confidence = wider corridor. `sigma` stays the same (it's the model's volatility estimate), only the z-multiplier changes. Example with sigma=1.2% and P=$97,500:
+
+| `confidence` | z | upperPrice | lowerPrice | Corridor width |
+|-------------|---|-----------|-----------|----------------|
+| 0.6827 | 1.00 | $98,677 | $96,337 | $2,340 |
+| 0.95 | 1.96 | $99,808 | $95,222 | $4,586 |
+| 0.99 | 2.58 | $100,545 | $94,520 | $6,025 |
+
+**When to use which:**
+
+- **±1σ (default)** — typical expected move for the next candle. Good for scalping SL/TP targets and assessing whether a move is "normal" or significant
+- **95% VaR** — worst reasonable scenario. Good for risk management, position sizing, and stop-losses that shouldn't be triggered by noise
+- **99% VaR** — extreme tail risk. Good for stress testing and margin calculations
+
 **Parameters:**
 
 | Parameter | Type | Default | Description |
