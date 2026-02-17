@@ -487,6 +487,14 @@ declare function profileStudentTDf(returns: number[], varianceSeries: number[]):
  * of how the model was calibrated (MLE, OLS, D², etc.).
  */
 declare function qlike(varianceSeries: number[], rv: number[]): number;
+/**
+ * Inverse standard normal CDF (probit function).
+ * Converts a two-sided confidence level (e.g. 0.95) to the corresponding
+ * z-score (e.g. 1.96).
+ *
+ * Uses Acklam's rational approximation (max relative error < 1.15e-9).
+ */
+declare function probit(confidence: number): number;
 
 type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
 interface PredictionResult {
@@ -541,5 +549,5 @@ declare function nelderMeadMultiStart(fn: (x: number[]) => number, x0: number[],
     restarts?: number;
 }): OptimizerResult;
 
-export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTNegLL, yangZhangVariance };
+export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, probit, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTNegLL, yangZhangVariance };
 export type { CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, GjrGarchOptions, GjrGarchParams, HarRvOptions, HarRvParams, LeverageStats, NoVaSOptions, NoVaSParams, OptimizerResult, PredictionResult, VolatilityForecast };

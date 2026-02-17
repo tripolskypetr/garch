@@ -22,6 +22,7 @@ export {
   studentTNegLL,
   profileStudentTDf,
   qlike,
+  probit,
 } from './utils.js';
 
 // Prediction

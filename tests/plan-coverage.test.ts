@@ -1030,6 +1030,44 @@ describe('forecast term structure', () => {
 
 // ── 22. calculateReturns ≡ calculateReturnsFromPrices ───────
 
+describe('probit coverage', () => {
+  it('central branch: probit(0.5) ≈ 0.6745', () => {
+    expect(probit(0.5)).toBeCloseTo(0.6744897502234225, 8);
+  });
+
+  it('high-tail branch: probit(0.95) ≈ 1.96', () => {
+    expect(probit(0.95)).toBeCloseTo(1.959963986120195, 6);
+  });
+
+  it('high-tail branch: probit(0.99) ≈ 2.576', () => {
+    expect(probit(0.99)).toBeCloseTo(2.5758293064439264, 6);
+  });
+
+  it('high-tail branch: probit(0.999) ≈ 3.291', () => {
+    expect(probit(0.999)).toBeCloseTo(3.29052672825886, 5);
+  });
+
+  it('near-zero confidence: probit(0.01) ≈ 0.01253', () => {
+    expect(probit(0.01)).toBeCloseTo(0.012533469522069105, 8);
+  });
+
+  it('throws on confidence = 0', () => {
+    expect(() => probit(0)).toThrow('confidence must be in (0, 1)');
+  });
+
+  it('throws on confidence = 1', () => {
+    expect(() => probit(1)).toThrow('confidence must be in (0, 1)');
+  });
+
+  it('throws on negative confidence', () => {
+    expect(() => probit(-0.5)).toThrow('confidence must be in (0, 1)');
+  });
+
+  it('throws on confidence > 1', () => {
+    expect(() => probit(1.5)).toThrow('confidence must be in (0, 1)');
+  });
+});
+
 describe('calculateReturns vs calculateReturnsFromPrices', () => {
   it('produce identical results from candle closes', () => {
     const candles = makeCandles(100, 8001);
