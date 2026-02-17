@@ -4,7 +4,7 @@ import { Egarch } from './egarch.js';
 import { GjrGarch } from './gjr-garch.js';
 import { HarRv } from './har.js';
 import { NoVaS } from './novas.js';
-import { ljungBox, calculateReturns, perCandleParkinson, qlike } from './utils.js';
+import { ljungBox, calculateReturns, perCandleParkinson, qlike, probit } from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
 
@@ -70,9 +70,9 @@ function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
   }
   const recommended = RECOMMENDED_CANDLES[interval];
   if (candles.length < recommended) {
-    console.warn(
+    /*console.warn(
       `[garch] ${interval}: ${candles.length} candles provided, recommend ≥${recommended} for reliable results. Check reliable: true in output.`,
-    );
+    );*/
   }
 }
 
@@ -221,27 +221,32 @@ function checkReliable(fit: FitResult): boolean {
 /**
  * Forecast expected price range for t+1 (next candle).
  *
- * Auto-selects GARCH or EGARCH based on leverage effect.
- * Returns ±1σ price corridor so you can set SL/TP yourself.
+ * Auto-selects the best volatility model via QLIKE.
+ * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
+ *   Common values: 0.90 → z=1.645, 0.95 → z=1.96, 0.99 → z=2.576.
  */
 export function predict(
   candles: Candle[],
   interval: CandleInterval,
   currentPrice = candles[candles.length - 1].close,
+  confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
+  const z = probit(confidence);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], 1);
 
   const sigma = fit.forecast.volatility[0];
-  const move = currentPrice * sigma;
+  const upperPrice = currentPrice * Math.exp(z * sigma);
+  const lowerPrice = currentPrice * Math.exp(-z * sigma);
 
   return {
     modelType: fit.modelType,
     currentPrice,
     sigma,
-    move,
-    upperPrice: currentPrice + move,
-    lowerPrice: currentPrice - move,
+    move: upperPrice - currentPrice,
+    upperPrice,
+    lowerPrice,
     reliable: checkReliable(fit),
   };
 }
@@ -250,28 +255,32 @@ export function predict(
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Use for swing trades where you hold across multiple candles.
+ * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
 export function predictRange(
   candles: Candle[],
   interval: CandleInterval,
   steps: number,
   currentPrice = candles[candles.length - 1].close,
+  confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
+  const z = probit(confidence);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], steps);
 
   const cumulativeVariance = fit.forecast.variance.reduce((sum, v) => sum + v, 0);
   const sigma = Math.sqrt(cumulativeVariance);
-  const move = currentPrice * sigma;
+  const upperPrice = currentPrice * Math.exp(z * sigma);
+  const lowerPrice = currentPrice * Math.exp(-z * sigma);
 
   return {
     modelType: fit.modelType,
     currentPrice,
     sigma,
-    move,
-    upperPrice: currentPrice + move,
-    lowerPrice: currentPrice - move,
+    move: upperPrice - currentPrice,
+    upperPrice,
+    lowerPrice,
     reliable: checkReliable(fit),
   };
 }

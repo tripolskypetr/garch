@@ -16,7 +16,7 @@ import {
   EXPECTED_ABS_NORMAL,
   expectedAbsStudentT,
 } from '../src/index.js';
-import { chi2Survival } from '../src/utils.js';
+import { chi2Survival, probit } from '../src/utils.js';
 import type { Candle } from '../src/index.js';
 
 // ── helpers ──────────────────────────────────────────────────
@@ -337,24 +337,26 @@ describe('predict output field consistency', () => {
     expect(result.upperPrice).toBeCloseTo(result.currentPrice + result.move, 10);
   });
 
-  it('lowerPrice = currentPrice - move', () => {
+  it('lowerPrice = currentPrice * exp(-z*sigma)', () => {
     const candles = makeCandles(200, 303);
     const result = predict(candles, '4h');
-    expect(result.lowerPrice).toBeCloseTo(result.currentPrice - result.move, 10);
+    const z = probit(0.6827);
+    expect(result.lowerPrice).toBeCloseTo(result.currentPrice * Math.exp(-z * result.sigma), 10);
   });
 
-  it('move = currentPrice * sigma', () => {
+  it('move = currentPrice * (exp(z*sigma) - 1)', () => {
     const candles = makeCandles(200, 404);
     const result = predict(candles, '4h');
-    expect(result.move).toBeCloseTo(result.currentPrice * result.sigma, 10);
+    const z = probit(0.6827);
+    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(z * result.sigma) - 1), 10);
   });
 
-  it('corridor is symmetric around currentPrice', () => {
+  it('log-normal corridor: ln(upper/P) = -ln(lower/P)', () => {
     const candles = makeCandles(200, 505);
     const result = predict(candles, '4h');
-    const distUp = result.upperPrice - result.currentPrice;
-    const distDown = result.currentPrice - result.lowerPrice;
-    expect(distUp).toBeCloseTo(distDown, 10);
+    const logUp = Math.log(result.upperPrice / result.currentPrice);
+    const logDown = Math.log(result.lowerPrice / result.currentPrice);
+    expect(logUp).toBeCloseTo(-logDown, 10);
   });
 });
 
