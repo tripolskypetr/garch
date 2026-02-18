@@ -514,7 +514,7 @@ interface PredictionResult {
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  *   Common values: 0.90 → z=1.645, 0.95 → z=1.96, 0.99 → z=2.576.
  */
-declare function predict(candles: Candle[], interval: CandleInterval, currentPrice?: number, confidence?: number): PredictionResult;
+declare function predict(candles: Candle[], interval: CandleInterval, currentPrice?: number | null, confidence?: number): PredictionResult;
 /**
  * Forecast expected price range over multiple candles.
  *
@@ -522,7 +522,7 @@ declare function predict(candles: Candle[], interval: CandleInterval, currentPri
  * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
-declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number, confidence?: number): PredictionResult;
+declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number | null, confidence?: number): PredictionResult;
 /**
  * Walk-forward backtest of predict.
  *

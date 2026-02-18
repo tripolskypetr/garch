@@ -229,10 +229,13 @@ function checkReliable(fit: FitResult): boolean {
 export function predict(
   candles: Candle[],
   interval: CandleInterval,
-  currentPrice = candles[candles.length - 1].close,
+  currentPrice?: number | null,
   confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
+
+  currentPrice = currentPrice || candles[candles.length - 1].close;
+
   const z = probit(confidence);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], 1);
 
@@ -262,12 +265,14 @@ export function predictRange(
   candles: Candle[],
   interval: CandleInterval,
   steps: number,
-  currentPrice = candles[candles.length - 1].close,
+  currentPrice?: number | null,
   confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
   const z = probit(confidence);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], steps);
+
+  currentPrice = currentPrice || candles[candles.length - 1].close;
 
   const cumulativeVariance = fit.forecast.variance.reduce((sum, v) => sum + v, 0);
   const sigma = Math.sqrt(cumulativeVariance);
