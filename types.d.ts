@@ -498,13 +498,21 @@ declare function probit(confidence: number): number;
 
 type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
 interface PredictionResult {
+    /** Reference price used to compute the corridor (last close or the value passed as `currentPrice`). */
     currentPrice: number;
+    /** One-period (or cumulative) volatility estimate, as a decimal log-return standard deviation (e.g. `0.012` = 1.2%). */
     sigma: number;
+    /** Upward expected move in price units: `upperPrice - currentPrice`. */
     move: number;
+    /** Upward expected move in percent (0–100 scale, e.g. `1.21` means 1.21%). Equal to `(exp(z·σ) - 1) * 100`. */
     movePercent: number;
+    /** Upper price band: `currentPrice · exp(+z·σ)`. */
     upperPrice: number;
+    /** Lower price band: `currentPrice · exp(-z·σ)`. Always positive. */
     lowerPrice: number;
+    /** Volatility model auto-selected by QLIKE. */
     modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
+    /** `true` when the model converged, persistence < 0.999, and Ljung-Box p-value ≥ 0.05. */
     reliable: boolean;
 }
 /**
