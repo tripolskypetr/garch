@@ -501,6 +501,7 @@ interface PredictionResult {
     currentPrice: number;
     sigma: number;
     move: number;
+    movePercent: number;
     upperPrice: number;
     lowerPrice: number;
     modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';

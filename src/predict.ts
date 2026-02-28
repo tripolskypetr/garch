@@ -51,6 +51,7 @@ export interface PredictionResult {
   currentPrice: number;
   sigma: number;
   move: number;
+  movePercent: number;
   upperPrice: number;
   lowerPrice: number;
   modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
@@ -248,6 +249,7 @@ export function predict(
     currentPrice,
     sigma,
     move: upperPrice - currentPrice,
+    movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,
     lowerPrice,
     reliable: checkReliable(fit),
@@ -284,6 +286,7 @@ export function predictRange(
     currentPrice,
     sigma,
     move: upperPrice - currentPrice,
+    movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,
     lowerPrice,
     reliable: checkReliable(fit),

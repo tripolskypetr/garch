@@ -33,7 +33,8 @@ const result = predict(candles, '4h');
 // {
 //   currentPrice: 97500,
 //   sigma: 0.012,          // 1.2% per-period volatility
-//   move: 1177,            // upward expected move (upper - current)
+//   move: 1177,            // upward expected move (upper - current), in dollars
+//   movePercent: 1.21,     // upward expected move, in percent (0–100)
 //   upperPrice: 98677,     // P·exp(+σ) — ceiling
 //   lowerPrice: 96337,     // P·exp(-σ) — floor
 //   modelType: 'egarch',
@@ -87,7 +88,8 @@ Higher confidence = wider corridor. `sigma` stays the same (it's the model's vol
 interface PredictionResult {
   currentPrice: number;           // Reference price
   sigma: number;                  // One-period volatility (decimal, e.g. 0.012 = 1.2%)
-  move: number;                   // Upward price move = upperPrice - currentPrice
+  move: number;                   // Upward price move = upperPrice - currentPrice (dollars)
+  movePercent: number;            // Upward price move in percent (0–100), e.g. 1.21 = 1.21%
   upperPrice: number;             // P · exp(+z·σ)
   lowerPrice: number;             // P · exp(-z·σ)
   modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas'; // Auto-selected model
@@ -108,7 +110,8 @@ const range = predictRange(candles, '4h', 5);
 // {
 //   currentPrice: 97500,
 //   sigma: 0.027,           // cumulative ~2.7% over 5 candles
-//   move: 2669,             // upward expected move
+//   move: 2669,             // upward expected move, in dollars
+//   movePercent: 2.74,      // upward expected move, in percent (0–100)
 //   upperPrice: 100169,     // P·exp(+z·σ)
 //   lowerPrice: 94901,      // P·exp(-z·σ)
 //   modelType: 'egarch',
