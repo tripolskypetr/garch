@@ -50,13 +50,13 @@ export class Egarch {
     // ω = ln(0) = -Infinity instead of a graceful bad fit.
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
-      this.initialVariance = Math.max(sampleVariance(this.returns), 1e-18);
+      this.initialVariance = Math.max(sampleVariance(this.returns), 1e-300);
       this.rv = null;
     } else {
       const candles = data as Candle[];
       validateCandles(candles);
       this.returns = calculateReturns(candles);
-      this.initialVariance = Math.max(yangZhangVariance(candles), 1e-18);
+      this.initialVariance = Math.max(yangZhangVariance(candles), 1e-300);
       // Parkinson (1980) per-candle RV: ~5× more efficient than r²
       this.rv = perCandleParkinson(candles, this.returns);
     }
@@ -67,16 +67,20 @@ export class Egarch {
    */
   fit(options: { maxIter?: number; tol?: number } = {}): CalibrationResult<EgarchParams> {
     const { maxIter = 1000, tol = 1e-8 } = options;
-    const returns = this.returns;
-    const n = returns.length;
-    const initLogVar = Math.log(this.initialVariance);
+    const n = this.returns.length;
+    const initLogVarOrig = Math.log(this.initialVariance);
 
-    const rv = this.rv;
-
-    // Relative variance floor: an absolute 1e-12 rejects every feasible
-    // parameter vector once the per-bar return std drops below ~1e-6
-    // (stablecoins, FX minors), leaving only the penalty plateau.
-    const varFloor = this.initialVariance * 1e-12;
+    // Calibrate in normalized space: returns are scaled to unit initial
+    // variance, so the likelihood floors, the ±50 log-variance clamp, and
+    // optimizer tolerances are scale-free — a stablecoin pair and a
+    // high-vol altcoin follow the same optimizer path. ω is mapped back
+    // to the data scale after optimization.
+    const s2 = 1 / this.initialVariance;
+    const s = Math.sqrt(s2);
+    const returns = this.returns.map(r => r * s);
+    const rv = this.rv ? this.rv.map(v => v * s2) : null;
+    const initLogVar = 0; // ln of the scaled initial variance
+    const varFloor = 1e-12;
 
     function negLogLikelihood(params: number[]): number {
       const [omega, alpha, gamma, beta, df] = params;
@@ -151,7 +155,10 @@ export class Egarch {
       { maxIter, tol, restarts: 4 }
     );
 
-    const [omega, alpha, gamma, beta, df] = result.x;
+    // Map back to the data scale: ln σ²_orig = ln σ²_scaled + ln σ̂²_orig,
+    // so ω_orig = ω_scaled + (1−β)·ln σ̂²_orig; α/γ/β/df are scale-free
+    const [omegaScaled, alpha, gamma, beta, df] = result.x;
+    const omega = omegaScaled + (1 - beta) * initLogVarOrig;
 
     // For EGARCH, unconditional variance: E[ln(σ²)] = ω/(1-β)
     // So E[σ²] ≈ exp(ω/(1-β)) when α and γ effects average out
@@ -159,9 +166,11 @@ export class Egarch {
     const unconditionalVariance = Math.exp(unconditionalLogVar);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
-    // Report the pure likelihood: strip the shrinkage prior evaluated at the optimum
-    const priorAtOptimum = 0.5 * (unconditionalLogVar - initLogVar) ** 2;
-    const logLikelihood = -(result.fx - priorAtOptimum);
+    // Report the pure likelihood: strip the shrinkage prior evaluated at
+    // the optimum (the prior deviation is scale-invariant), then add the
+    // Jacobian of the rescaling: LL in data units = LL(scaled) + n·ln s
+    const priorAtOptimum = 0.5 * (unconditionalLogVar - initLogVarOrig) ** 2;
+    const logLikelihood = -(result.fx - priorAtOptimum) + n * Math.log(s);
     const numParams = 5;
 
     return {

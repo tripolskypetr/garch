@@ -78,18 +78,27 @@ export class NoVaS {
     const returns = this.returns;
     const n = returns.length;
     const p = this.lags;
-    const initVar = sampleVariance(returns);
+    const initVarOrig = sampleVariance(returns);
 
     // Innovation: Parkinson RV for candles, r² for prices
     const r2 = this.rv ?? returns.map(r => r * r);
+
+    // Calibrate in normalized space: returns are scaled to unit sample
+    // variance, so D² floors, the screening grid, and the stage-2 OLS
+    // conditioning are scale-free. The intercept weight and β₀ are mapped
+    // back to the data scale below; lag weights are scale-free.
+    const s2 = initVarOrig > 0 ? 1 / initVarOrig : 1;
+    const returnsS = returns.map(r => r * Math.sqrt(s2));
+    const r2S = r2.map(v => v * s2);
+    const initVar = 1;
+    const unscaleWeights = (w: number[]): number[] => [w[0] / s2, ...w.slice(1)];
 
     /**
      * Compute D² for a given weight vector.
      * D² = S² + (K - 3)² where S, K are skewness and kurtosis of W_t.
      */
-    // Relative floor: an absolute epsilon (1e-15) rejects every feasible
-    // weight vector once the sample variance drops below ~1e-14
-    const a0Floor = initVar * 1e-12;
+    // In normalized space the sample variance is 1, so a fixed epsilon is safe
+    const a0Floor = 1e-12;
 
     function objectiveD2(rawWeights: number[]): number {
       // Enforce constraints: a_j >= 0 via abs, a_0 > epsilon
@@ -111,11 +120,11 @@ export class NoVaS {
       for (let t = p; t < n; t++) {
         let variance = weights[0];
         for (let j = 1; j <= p; j++) {
-          variance += weights[j] * r2[t - j];
+          variance += weights[j] * r2S[t - j];
         }
         if (variance <= 0) return 1e10;
 
-        const w = returns[t] / Math.sqrt(variance);
+        const w = returnsS[t] / Math.sqrt(variance);
         if (!isFinite(w)) return 1e10;
 
         sumW += w;
@@ -193,12 +202,15 @@ export class NoVaS {
     // prediction of rv[t] — pairing it with r2[t+1] (as before) calibrated
     // β one bar off from how getForecastVarianceSeries and forecast use it.
     // Used both to pick among D² candidates and for the final rescaling.
-    const stage2 = (w: number[]): { beta0: number; beta1: number; rss: number; r2: number } | null => {
-      const dv = this.getVarianceSeriesInternal(w);
+    // Takes and returns normalized-space quantities (β₁ is scale-free,
+    // the caller unscales β₀); the degenerate-denominator threshold is
+    // then meaningful at any data scale.
+    const stage2 = (wScaled: number[]): { beta0: number; beta1: number; rss: number; r2: number } | null => {
+      const dv = this.getVarianceSeriesInternal(unscaleWeights(wScaled));
       let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0, count = 0;
       for (let t = p; t < n; t++) {
-        const x = dv[t];
-        const y = r2[t];
+        const x = dv[t] * s2;
+        const y = r2S[t];
         sumX += x;
         sumY += y;
         sumXX += x * x;
@@ -212,9 +224,9 @@ export class NoVaS {
       const yMean = sumY / count;
       let rss = 0, tss = 0;
       for (let t = p; t < n; t++) {
-        const yHat = beta0 + beta1 * dv[t];
-        rss += (r2[t] - yHat) ** 2;
-        tss += (r2[t] - yMean) ** 2;
+        const yHat = beta0 + beta1 * dv[t] * s2;
+        rss += (r2S[t] - yHat) ** 2;
+        tss += (r2S[t] - yMean) ** 2;
       }
       return { beta0, beta1, rss, r2: tss > 0 ? 1 - rss / tss : 0 };
     };
@@ -243,8 +255,10 @@ export class NoVaS {
       }
     }
 
-    // Extract final weights (abs for constraint enforcement)
-    const weights = result.x.map(w => Math.abs(w));
+    // Extract final weights (abs for constraint enforcement) and map the
+    // intercept back to the data scale
+    const weightsScaled = result.x.map(w => Math.abs(w));
+    const weights = unscaleWeights(weightsScaled);
 
     let persistence = 0;
     for (let j = 1; j <= p; j++) persistence += weights[j];
@@ -259,9 +273,9 @@ export class NoVaS {
     // D² weights discover lag structure; OLS rescales for forecast accuracy.
     // Only 2 parameters → robust on small samples with noisy per-candle RV.
     const d2Variance = this.getVarianceSeriesInternal(weights);
-    const s2Final = stage2(weights);
+    const s2Final = stage2(weightsScaled);
     // OLS failed (degenerate variance series) — fall back to identity rescaling
-    const forecastWeights = s2Final ? [s2Final.beta0, s2Final.beta1] : [0, 1];
+    const forecastWeights = s2Final ? [s2Final.beta0 / s2, s2Final.beta1] : [0, 1];
     const olsR2 = s2Final ? s2Final.r2 : 0;
 
     // Student-t log-likelihood for AIC comparison with GARCH/EGARCH/HAR-RV

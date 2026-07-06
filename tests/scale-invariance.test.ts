@@ -2,17 +2,22 @@ import { describe, it, expect } from 'vitest';
 import { Garch } from '../src/garch.js';
 import { GjrGarch } from '../src/gjr-garch.js';
 import { Egarch } from '../src/egarch.js';
+import { HarRv } from '../src/har.js';
+import { NoVaS } from '../src/novas.js';
+import { predict } from '../src/predict.js';
 import { profileStudentTDf } from '../src/utils.js';
+import type { Candle } from '../src/types.js';
 
 /**
- * MLE fits must be scale-equivariant: multiplying every return by k
- * (a stablecoin pair, an FX minor, a shorter candle interval) must give
- * the same alpha/beta/df and scale omega by k² / annualizedVol by k.
+ * Every calibration must be scale-equivariant: multiplying every return by
+ * k (a stablecoin pair, an FX minor, a shorter candle interval) must give
+ * the same shape parameters (α/β/γ/df/lag weights) and scale the level
+ * parameters (ω, β₀, annualizedVol) by the appropriate power of k.
  *
- * Absolute floors like `omega <= 1e-12` or `variance <= 1e-12` inside the
- * likelihood silently reject ALL feasible parameters once the per-bar
- * return std drops below ~1e-6, so the optimizer "converges" on the
- * penalty plateau and returns the untouched initial guess.
+ * The models fit in normalized space (returns scaled to unit variance
+ * internally), so this holds by construction — the optimizer follows the
+ * same path at any data scale. Residual tolerances only absorb float
+ * rounding from the price→return conversion.
  */
 
 function mulberry32(seed: number): () => number {
@@ -60,6 +65,22 @@ function pricesFromReturns(returns: number[], p0 = 100): number[] {
   return prices;
 }
 
+/** Deterministic OHLC candles from a return series (wick = |r|/2 in log space). */
+function candlesFromReturns(returns: number[], seed: number, p0 = 100): Candle[] {
+  const rng = mulberry32(seed);
+  const candles: Candle[] = [{ open: p0, high: p0, low: p0, close: p0, volume: 1 }];
+  let close = p0;
+  for (const r of returns) {
+    const open = close;
+    close = open * Math.exp(r);
+    const wick = (Math.abs(r) / 2) * (0.5 + rng());
+    const high = Math.max(open, close) * Math.exp(wick);
+    const low = Math.min(open, close) * Math.exp(-wick);
+    candles.push({ open, high, low, close, volume: 1 });
+  }
+  return candles;
+}
+
 // Unconditional per-bar variance (2e-4)² = 4e-8 — a normal crypto/equity level
 const N = 800;
 const TRUE_ALPHA = 0.08;
@@ -67,51 +88,102 @@ const TRUE_BETA = 0.88;
 const TRUE_OMEGA = 4e-8 * (1 - TRUE_ALPHA - TRUE_BETA);
 const BASE_RETURNS = simGarchReturns(N, TRUE_OMEGA, TRUE_ALPHA, TRUE_BETA, 42);
 
-// k = 1e-3 puts the per-bar std at ~2e-7 — the stablecoin/low-vol regime
-const K = 1e-3;
-const TINY_RETURNS = BASE_RETURNS.map(r => r * K);
+// From stablecoin dust (std ~2e-10 per bar) to extreme vol (std ~20% per bar)
+const SCALES = [1e-6, 1e-3, 1e3];
 
 function relErr(a: number, b: number): number {
   return Math.abs(a / b - 1);
 }
 
-describe('scale invariance of MLE calibration (low-volatility series)', () => {
-  it('Garch: alpha/beta/df match the normal-scale fit, vol scales by k', () => {
+describe.each(SCALES)('scale equivariance at k = %s', (K: number) => {
+  const TINY_RETURNS = BASE_RETURNS.map(r => r * K);
+
+  it('Garch: same alpha/beta/df, vol scales by k', () => {
     const base = new Garch(pricesFromReturns(BASE_RETURNS)).fit();
     const tiny = new Garch(pricesFromReturns(TINY_RETURNS)).fit();
 
-    expect(Math.abs(tiny.params.alpha - base.params.alpha)).toBeLessThan(0.02);
-    expect(Math.abs(tiny.params.beta - base.params.beta)).toBeLessThan(0.02);
-    expect(relErr(tiny.params.annualizedVol, base.params.annualizedVol * K)).toBeLessThan(0.05);
-    expect(relErr(tiny.params.omega, base.params.omega * K * K)).toBeLessThan(0.25);
-    expect(Number.isFinite(tiny.diagnostics.logLikelihood)).toBe(true);
-    // A plateau exit reports fx = 1e10 → logLikelihood = -1e10
+    expect(Math.abs(tiny.params.alpha - base.params.alpha)).toBeLessThan(1e-3);
+    expect(Math.abs(tiny.params.beta - base.params.beta)).toBeLessThan(1e-3);
+    expect(Math.abs(tiny.params.df - base.params.df)).toBeLessThan(0.5);
+    expect(relErr(tiny.params.annualizedVol, base.params.annualizedVol * K)).toBeLessThan(1e-3);
+    expect(relErr(tiny.params.omega, base.params.omega * K * K)).toBeLessThan(1e-2);
     expect(tiny.diagnostics.logLikelihood).toBeGreaterThan(-1e9);
   });
 
-  it('GjrGarch: params match the normal-scale fit, vol scales by k', () => {
+  it('GjrGarch: same alpha/gamma/beta/df, vol scales by k', () => {
     const base = new GjrGarch(pricesFromReturns(BASE_RETURNS)).fit();
     const tiny = new GjrGarch(pricesFromReturns(TINY_RETURNS)).fit();
 
-    expect(Math.abs(tiny.params.alpha - base.params.alpha)).toBeLessThan(0.02);
-    expect(Math.abs(tiny.params.beta - base.params.beta)).toBeLessThan(0.02);
-    expect(Math.abs(tiny.params.gamma - base.params.gamma)).toBeLessThan(0.02);
-    expect(relErr(tiny.params.annualizedVol, base.params.annualizedVol * K)).toBeLessThan(0.05);
+    expect(Math.abs(tiny.params.alpha - base.params.alpha)).toBeLessThan(1e-3);
+    expect(Math.abs(tiny.params.beta - base.params.beta)).toBeLessThan(1e-3);
+    expect(Math.abs(tiny.params.gamma - base.params.gamma)).toBeLessThan(1e-3);
+    expect(relErr(tiny.params.annualizedVol, base.params.annualizedVol * K)).toBeLessThan(1e-3);
     expect(tiny.diagnostics.logLikelihood).toBeGreaterThan(-1e9);
   });
 
-  it('Egarch: params match the normal-scale fit, vol scales by k', () => {
+  it('Egarch: same alpha/gamma/beta/df, vol scales by k', () => {
     const base = new Egarch(pricesFromReturns(BASE_RETURNS)).fit();
     const tiny = new Egarch(pricesFromReturns(TINY_RETURNS)).fit();
 
-    expect(Math.abs(tiny.params.alpha - base.params.alpha)).toBeLessThan(0.05);
-    expect(Math.abs(tiny.params.beta - base.params.beta)).toBeLessThan(0.05);
-    expect(relErr(tiny.params.annualizedVol, base.params.annualizedVol * K)).toBeLessThan(0.10);
+    expect(Math.abs(tiny.params.alpha - base.params.alpha)).toBeLessThan(1e-3);
+    expect(Math.abs(tiny.params.beta - base.params.beta)).toBeLessThan(1e-3);
+    expect(Math.abs(tiny.params.gamma - base.params.gamma)).toBeLessThan(1e-3);
+    expect(relErr(tiny.params.annualizedVol, base.params.annualizedVol * K)).toBeLessThan(1e-2);
     expect(tiny.diagnostics.logLikelihood).toBeGreaterThan(-1e9);
   });
 
-  it('profileStudentTDf: df is invariant to rescaling returns and variances', () => {
-    // Variance series from the true GARCH recursion
+  it('HarRv: same slopes/r2/df, beta0 scales by k²', () => {
+    const base = new HarRv(pricesFromReturns(BASE_RETURNS)).fit();
+    const tiny = new HarRv(pricesFromReturns(TINY_RETURNS)).fit();
+
+    expect(Math.abs(tiny.params.betaShort - base.params.betaShort)).toBeLessThan(1e-6);
+    expect(Math.abs(tiny.params.betaMedium - base.params.betaMedium)).toBeLessThan(1e-6);
+    expect(Math.abs(tiny.params.betaLong - base.params.betaLong)).toBeLessThan(1e-6);
+    expect(Math.abs(tiny.params.r2 - base.params.r2)).toBeLessThan(1e-6);
+    expect(Math.abs(tiny.params.df - base.params.df)).toBeLessThan(0.1);
+    expect(relErr(tiny.params.beta0, base.params.beta0 * K * K)).toBeLessThan(1e-6);
+    expect(relErr(tiny.params.annualizedVol, base.params.annualizedVol * K)).toBeLessThan(1e-4);
+  });
+
+  it('NoVaS: forecast scales by k², df invariant', () => {
+    const baseModel = new NoVaS(pricesFromReturns(BASE_RETURNS));
+    const tinyModel = new NoVaS(pricesFromReturns(TINY_RETURNS));
+    const base = baseModel.fit();
+    const tiny = tinyModel.fit();
+
+    // The D² minimum is a flat manifold (weights are not identified — that
+    // is why stage 2 exists), so float noise from the price→return
+    // conversion can land the optimizer on a different manifold point at
+    // extreme scales. Assert what users consume: the stage-2 rescaled
+    // forecast, which the manifold indeterminacy mostly cancels out of.
+    expect(Math.abs(tiny.params.df - base.params.df)).toBeLessThan(0.5);
+    expect(Math.abs(tiny.params.persistence - base.params.persistence)).toBeLessThan(0.1);
+
+    const fBase = baseModel.forecast(base.params, 5).variance;
+    const fTiny = tinyModel.forecast(tiny.params, 5).variance;
+    for (let h = 0; h < 5; h++) {
+      expect(relErr(fTiny[h], fBase[h] * K * K)).toBeLessThan(0.05);
+    }
+  });
+});
+
+describe('scale equivariance end-to-end (predict)', () => {
+  it('same model selected, corridor width scales by k', () => {
+    const K = 1e-3;
+    const base = predict(candlesFromReturns(BASE_RETURNS, 7), '1h');
+    const tiny = predict(candlesFromReturns(BASE_RETURNS.map(r => r * K), 7), '1h');
+
+    expect(tiny.modelType).toBe(base.modelType);
+    expect(Math.abs(tiny.zScore - base.zScore)).toBeLessThan(1e-2);
+    expect(relErr(tiny.sigma, base.sigma * K)).toBeLessThan(1e-2);
+    // movePercent ≈ z·σ·100 in the small-move limit
+    expect(relErr(tiny.movePercent, base.movePercent * K)).toBeLessThan(2e-2);
+    expect(tiny.reliable).toBe(base.reliable);
+  });
+});
+
+describe('df profiling is scale-free', () => {
+  it('profileStudentTDf: df invariant to rescaling returns and variances', () => {
     const vs: number[] = [];
     let v = TRUE_OMEGA / (1 - TRUE_ALPHA - TRUE_BETA);
     for (let i = 0; i < BASE_RETURNS.length; i++) {
@@ -120,9 +192,13 @@ describe('scale invariance of MLE calibration (low-volatility series)', () => {
     }
 
     const dfBase = profileStudentTDf(BASE_RETURNS, vs);
-    const dfTiny = profileStudentTDf(TINY_RETURNS, vs.map(x => x * K * K));
-
-    // NLL(df) shifts by an additive constant under rescaling → same argmin
-    expect(dfTiny).toBeCloseTo(dfBase, 6);
+    for (const k of [1e-6, 1e-3, 1e3]) {
+      const dfScaled = profileStudentTDf(
+        BASE_RETURNS.map(r => r * k),
+        vs.map(x => x * k * k),
+      );
+      // NLL(df) shifts by an additive constant under rescaling → same argmin
+      expect(dfScaled).toBeCloseTo(dfBase, 6);
+    }
   });
 });

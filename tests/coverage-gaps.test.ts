@@ -243,7 +243,10 @@ describe('Convenience function options forwarding', () => {
 // ── 7. EGARCH forecast monotonicity ─────────────────────────
 
 describe('EGARCH forecast convergence', () => {
-  it('forecast log-variance converges monotonically toward unconditional', () => {
+  it('forecast log-variance contracts geometrically toward unconditional', () => {
+    // With β < 0 (a valid EGARCH fit) the path oscillates around the
+    // unconditional level, so the invariant is |logVar(h) − u| shrinking
+    // by factor |β| each step, not monotonicity in the level itself.
     const prices = generateEgarchData(500, -0.1, 0.1, -0.05, 0.9, 42);
     const model = new Egarch(prices);
     const result = model.fit();
@@ -253,14 +256,14 @@ describe('EGARCH forecast convergence', () => {
     const fc = model.forecast(result.params, 50);
     const logVars = fc.variance.map(v => Math.log(v));
 
-    const above = logVars[0] >= unconditionalLogVar;
     for (let h = 1; h < 50; h++) {
-      if (above) {
-        expect(logVars[h]).toBeLessThanOrEqual(logVars[h - 1] + 1e-10);
-      } else {
-        expect(logVars[h]).toBeGreaterThanOrEqual(logVars[h - 1] - 1e-10);
-      }
+      const prev = Math.abs(logVars[h - 1] - unconditionalLogVar);
+      const curr = Math.abs(logVars[h] - unconditionalLogVar);
+      expect(curr).toBeLessThanOrEqual(prev + 1e-10);
     }
+    // And the path actually converges
+    expect(Math.abs(logVars[49] - unconditionalLogVar))
+      .toBeLessThan(Math.abs(logVars[0] - unconditionalLogVar) + 1e-10);
   });
 });
 

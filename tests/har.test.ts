@@ -1095,13 +1095,23 @@ describe('HAR-RV edge cases (deep)', () => {
     expect(result.diagnostics.converged).toBe(true);
   });
 
-  it('near-constant prices throw singular matrix (degenerate RV)', () => {
-    // Prices all identical except tiny noise → rv ≈ 0 → X'X singular
+  it('exactly constant prices throw singular matrix (zero RV)', () => {
+    // All returns 0 → rv all 0 → zero regressor columns → genuinely singular
+    const prices: number[] = new Array(200).fill(100);
+    expect(() => calibrateHarRv(prices)).toThrow('Singular matrix');
+  });
+
+  it('quantization-noise prices fit finite (no scale-dependent singular throw)', () => {
+    // 100 + i·1e-15 rounds to steps of ~1.4e-14 → occasional 1e-16 returns.
+    // The RV-normalized OLS solves this tiny-but-real system instead of
+    // tripping the absolute pivot threshold on the raw ~1e-24 X'X entries.
     const prices: number[] = [];
     for (let i = 0; i < 200; i++) {
       prices.push(100 + i * 1e-15);
     }
-    expect(() => calibrateHarRv(prices)).toThrow('Singular matrix');
+    const result = calibrateHarRv(prices);
+    expect(Number.isFinite(result.params.beta0)).toBe(true);
+    expect(Number.isFinite(result.diagnostics.logLikelihood)).toBe(true);
   });
 
   it('forecast from minimum data size (longLag + 30 + 1 prices)', () => {

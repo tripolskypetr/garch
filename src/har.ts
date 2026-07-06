@@ -185,6 +185,15 @@ export class HarRv {
     const { rv, shortLag, mediumLag, longLag } = this;
     const n = rv.length;
 
+    // Regress in normalized units (RV scaled to unit mean): OLS slopes and
+    // R² are scale-free, and the singular-matrix pivot threshold in the
+    // solver keeps detecting genuine collinearity instead of tripping on
+    // low-volatility series where X'X entries are ~1e-24. β₀ is mapped
+    // back to the data scale below.
+    const meanRv = rv.reduce((s, v) => s + v, 0) / n;
+    const s2 = meanRv > 0 ? 1 / meanRv : 1;
+    const rvS = rv.map(v => v * s2);
+
     // Build regression data
     // Usable range: t = longLag-1 .. n-2 (need longLag history, and rv[t+1] as target)
     const startIdx = longLag - 1;
@@ -195,15 +204,16 @@ export class HarRv {
     const y: number[] = [];
 
     for (let t = startIdx; t <= endIdx; t++) {
-      const rvShort = rollingMean(rv, t, shortLag);
-      const rvMedium = rollingMean(rv, t, mediumLag);
-      const rvLong = rollingMean(rv, t, longLag);
+      const rvShort = rollingMean(rvS, t, shortLag);
+      const rvMedium = rollingMean(rvS, t, mediumLag);
+      const rvLong = rollingMean(rvS, t, longLag);
       X.push([1, rvShort, rvMedium, rvLong]);
-      y.push(rv[t + 1]);
+      y.push(rvS[t + 1]);
     }
 
     const result = ols(X, y);
-    const [beta0, betaShort, betaMedium, betaLong] = result.beta;
+    const [beta0Scaled, betaShort, betaMedium, betaLong] = result.beta;
+    const beta0 = beta0Scaled / s2;
 
     const persistence = betaShort + betaMedium + betaLong;
     const unconditionalVariance = persistence < 1 && persistence > -1
@@ -212,7 +222,8 @@ export class HarRv {
     const annualizedVol = Math.sqrt(Math.abs(unconditionalVariance) * this.periodsPerYear) * 100;
 
     // Student-t log-likelihood on returns using HAR-RV fitted variances
-    const varianceSeries = this.getVarianceSeriesInternal(result.beta);
+    // (data-scale β vector — result.beta carries the normalized intercept)
+    const varianceSeries = this.getVarianceSeriesInternal([beta0, betaShort, betaMedium, betaLong]);
     const df = profileStudentTDf(this.returns, varianceSeries);
     const ll = -studentTNegLL(this.returns, varianceSeries, df);
 

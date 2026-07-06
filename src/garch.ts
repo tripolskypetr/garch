@@ -47,13 +47,13 @@ export class Garch {
     // log(0)/division-by-zero downstream instead of a graceful bad fit.
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
-      this.initialVariance = Math.max(sampleVariance(this.returns), 1e-18);
+      this.initialVariance = Math.max(sampleVariance(this.returns), 1e-300);
       this.rv = null;
     } else {
       const candles = data as Candle[];
       validateCandles(candles);
       this.returns = calculateReturns(candles);
-      this.initialVariance = Math.max(yangZhangVariance(candles), 1e-18);
+      this.initialVariance = Math.max(yangZhangVariance(candles), 1e-300);
       // Parkinson (1980) per-candle RV: ~5× more efficient than r²
       this.rv = perCandleParkinson(candles, this.returns);
     }
@@ -64,17 +64,19 @@ export class Garch {
    */
   fit(options: { maxIter?: number; tol?: number } = {}): CalibrationResult<GarchParams> {
     const { maxIter = 1000, tol = 1e-8 } = options;
-    const returns = this.returns;
-    const n = returns.length;
-    const initVar = this.initialVariance;
+    const n = this.returns.length;
 
-    const rv = this.rv;
-
-    // Positivity floors relative to the sample variance: absolute floors
-    // (1e-12) silently reject every feasible parameter vector once the
-    // per-bar return std drops below ~1e-6 (stablecoins, FX minors) and
-    // the optimizer "converges" on the penalty plateau.
-    const varFloor = initVar * 1e-12;
+    // Calibrate in normalized space: returns are scaled to unit initial
+    // variance, so the likelihood floors, penalty constants, and optimizer
+    // tolerances are scale-free — a stablecoin pair and a high-vol altcoin
+    // follow the same optimizer path. Parameters are mapped back to the
+    // data scale after optimization.
+    const s2 = 1 / this.initialVariance;
+    const s = Math.sqrt(s2);
+    const returns = this.returns.map(r => r * s);
+    const rv = this.rv ? this.rv.map(v => v * s2) : null;
+    const initVar = 1;
+    const varFloor = 1e-12;
 
     // Student-t negative log-likelihood function
     function negLogLikelihood(params: number[]): number {
@@ -118,12 +120,15 @@ export class Garch {
 
     const result = nelderMeadMultiStart(negLogLikelihood, [omega0, alpha0, beta0, df0], { maxIter, tol, restarts: 3 });
 
-    const [omega, alpha, beta, df] = result.x;
+    // Map back to the data scale: ω scales with variance, α/β/df are scale-free
+    const [omegaScaled, alpha, beta, df] = result.x;
+    const omega = omegaScaled / s2;
     const persistence = alpha + beta;
     const unconditionalVariance = omega / (1 - persistence);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
-    const logLikelihood = -result.fx;
+    // Jacobian of the rescaling: LL in data units = LL(scaled) + n·ln s
+    const logLikelihood = -result.fx + n * Math.log(s);
     const numParams = 4;
 
     return {
