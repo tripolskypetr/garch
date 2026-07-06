@@ -46,15 +46,17 @@ export class Egarch {
       throw new Error('Need at least 50 data points for EGARCH estimation');
     }
 
+    // Variance floor keeps degenerate (constant-price) data from producing
+    // ω = ln(0) = -Infinity instead of a graceful bad fit.
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
-      this.initialVariance = sampleVariance(this.returns);
+      this.initialVariance = Math.max(sampleVariance(this.returns), 1e-18);
       this.rv = null;
     } else {
       const candles = data as Candle[];
       validateCandles(candles);
       this.returns = calculateReturns(candles);
-      this.initialVariance = yangZhangVariance(candles);
+      this.initialVariance = Math.max(yangZhangVariance(candles), 1e-18);
       // Parkinson (1980) per-candle RV: ~5× more efficient than r²
       this.rv = perCandleParkinson(candles, this.returns);
     }

@@ -14,6 +14,16 @@ export function validateCandles(candles: Candle[]): void {
     if (c.high < c.low) {
       throw new Error(`Invalid candle ${i}: high (${c.high}) < low (${c.low})`);
     }
+    // Open/close must lie inside [low, high] — Parkinson, Garman-Klass and
+    // Yang-Zhang all assume it; violated candles silently distort every
+    // range-based estimator. Tiny relative slack absorbs float rounding.
+    const bodyHigh = Math.max(c.open, c.close);
+    const bodyLow = Math.min(c.open, c.close);
+    if (c.high < bodyHigh * (1 - 1e-9) || c.low > bodyLow * (1 + 1e-9)) {
+      throw new Error(
+        `Invalid candle ${i}: open/close outside [low, high] (open=${c.open} high=${c.high} low=${c.low} close=${c.close})`,
+      );
+    }
   }
 }
 

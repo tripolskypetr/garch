@@ -47,15 +47,17 @@ export class GjrGarch {
       throw new Error('Need at least 50 data points for GJR-GARCH estimation');
     }
 
+    // Variance floor keeps degenerate (constant-price) data from producing
+    // log(0)/division-by-zero downstream instead of a graceful bad fit.
     if (typeof data[0] === 'number') {
       this.returns = calculateReturnsFromPrices(data as number[]);
-      this.initialVariance = sampleVariance(this.returns);
+      this.initialVariance = Math.max(sampleVariance(this.returns), 1e-18);
       this.rv = null;
     } else {
       const candles = data as Candle[];
       validateCandles(candles);
       this.returns = calculateReturns(candles);
-      this.initialVariance = yangZhangVariance(candles);
+      this.initialVariance = Math.max(yangZhangVariance(candles), 1e-18);
       this.rv = perCandleParkinson(candles, this.returns);
     }
   }

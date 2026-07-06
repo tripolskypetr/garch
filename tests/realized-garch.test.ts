@@ -440,8 +440,9 @@ describe('fitModel Parkinson RV verification', () => {
     // When we give real OHLC candles, Parkinson RV extracts more info
     // vs candles where H=L=C (forcing r² fallback)
     const realCandles = makeCandles(500, 42);
+    // open must equal close too — open outside [low, high] is invalid OHLC
     const flatCandles = realCandles.map(c => ({
-      open: c.open, high: c.close, low: c.close, close: c.close, volume: c.volume,
+      open: c.close, high: c.close, low: c.close, close: c.close, volume: c.volume,
     }));
 
     const resultReal = predict(realCandles, '15m');

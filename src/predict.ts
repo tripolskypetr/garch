@@ -13,6 +13,7 @@ import {
   studentTProbit,
   profileStudentTDf,
   empiricalQuantile,
+  validateCandles,
 } from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
@@ -89,18 +90,7 @@ function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
   if (candles.length < min) {
     throw new Error(`Need at least ${min} candles for ${interval} interval, got ${candles.length}`);
   }
-  for (let i = 0; i < candles.length; i++) {
-    const c = candles[i];
-    if (!isFinite(c.close) || c.close <= 0) {
-      throw new Error(`Invalid close price at candle ${i}: ${c.close}`);
-    }
-    if (!isFinite(c.open) || c.open <= 0 || !isFinite(c.high) || c.high <= 0 || !isFinite(c.low) || c.low <= 0) {
-      throw new Error(`Invalid OHLC at candle ${i}: open=${c.open} high=${c.high} low=${c.low}`);
-    }
-    if (c.high < c.low) {
-      throw new Error(`Invalid candle ${i}: high (${c.high}) < low (${c.low})`);
-    }
-  }
+  validateCandles(candles);
   const recommended = RECOMMENDED_CANDLES[interval];
   if (candles.length < recommended) {
     /*console.warn(
@@ -477,6 +467,11 @@ function corridorZ(fit: FitResult, confidence: number, steps = 1): number {
 
 function checkReliable(fit: FitResult): boolean {
   if (!fit.converged || fit.persistence >= 0.999) return false;
+
+  // Degenerate forecast: variance at (or below) the numerical floor means
+  // the fit collapsed (flat market, HAR/NoVaS clamp) — a zero-width
+  // corridor is never a reliable market forecast.
+  if (!(fit.forecast.variance[0] > 1e-16)) return false;
 
   // Ljung-Box on squared standardized residuals
   const { returns, varianceSeries } = fit;

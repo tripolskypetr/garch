@@ -540,36 +540,22 @@ describe('Candle OHLC validation', () => {
     expect(() => new HarRv(candles)).toThrow(/high.*low/i);
   });
 
-  it('open outside [low, high] candle → fit still works', () => {
+  it('open outside [low, high] candle → constructor rejects the data', () => {
     const candles = makeCandles(100, 42);
-    // Set open > high (invalid but possible in bad data feeds)
+    // Set open > high (invalid but possible in bad data feeds).
+    // Yang-Zhang and EGARCH leverage terms DO use open — silently accepting
+    // it distorts every range-based estimator, so it must fail loudly.
     candles[30] = { ...candles[30], open: candles[30].high + 1 };
 
-    // HAR-RV only uses high/low for Parkinson and close for returns
-    // So open doesn't matter for HAR-RV
-    const result = calibrateHarRv(candles);
-    expect(result.diagnostics.converged).toBe(true);
-    expect(Number.isFinite(result.params.beta0)).toBe(true);
+    expect(() => calibrateHarRv(candles)).toThrow(/outside \[low, high\]/);
   });
 
-  it('close outside [low, high] candle → returns computed from close, rv from H/L', () => {
+  it('close outside [low, high] candle → constructor rejects the data', () => {
     const candles = makeCandles(100, 42);
-    // Set close > high (invalid)
+    // Set close > high (invalid): Parkinson RV would miss the move entirely
     candles[30] = { ...candles[30], close: candles[30].high + 5 };
 
-    // Returns use close prices, so this affects returns
-    // HAR-RV won't throw — it just computes
-    const model = new HarRv(candles);
-    const rv = model.getRv();
-    const returns = model.getReturns();
-
-    // rv and returns should all be finite
-    for (const v of rv) {
-      expect(Number.isFinite(v)).toBe(true);
-    }
-    for (const r of returns) {
-      expect(Number.isFinite(r)).toBe(true);
-    }
+    expect(() => new HarRv(candles)).toThrow(/outside \[low, high\]/);
   });
 
   it('zero volume candle → HAR-RV ignores volume entirely', () => {
