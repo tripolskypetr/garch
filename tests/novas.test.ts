@@ -958,16 +958,19 @@ describe('NoVaS regression snapshot', () => {
     expect(result.params.lags).toBe(10);
     expect(result.params.weights.length).toBe(11);
     expect(result.params.forecastWeights.length).toBe(2); // [β₀, β₁] OLS rescaling
-    expect(result.params.forecastWeights[0]).toBeCloseTo(0.000077641590417634, 10);
-    expect(result.params.forecastWeights[1]).toBeCloseTo(0.7091483781307473, 10);
+    // Values re-pinned after the stage-2 pairing fix (σ²_t is already the
+    // one-step-ahead prediction of rv[t], so OLS pairs dv[t] with r2[t],
+    // not r2[t+1]) and D² candidate screening: stage-2 R² 0.035 → 0.082.
+    expect(result.params.forecastWeights[0]).toBeCloseTo(0.000002156148674260197, 10);
+    expect(result.params.forecastWeights[1]).toBeCloseTo(0.8241421544405126, 10);
     // D² initial guess fix: lag weights are dimensionless (not scaled by initVar)
-    expect(result.params.persistence).toBeCloseTo(0.5113115415856491, 10);
-    expect(result.params.dSquared).toBeCloseTo(2.7403829363063055e-9, 6);
-    expect(result.params.r2).toBeCloseTo(0.03485776485186953, 6);
+    expect(result.params.persistence).toBeCloseTo(0.6705482005647521, 10);
+    expect(result.params.dSquared).toBeCloseTo(2.3417486299660765e-9, 6);
+    expect(result.params.r2).toBeCloseTo(0.0820274602653891, 6);
     expect(result.diagnostics.converged).toBe(true);
-    expect(result.params.df).toBeCloseTo(21, 0);
-    expect(result.diagnostics.logLikelihood).toBeCloseTo(890.3106996820032, 0);
-    expect(result.diagnostics.aic).toBeCloseTo(-1756.6213993640065, 0);
+    expect(result.params.df).toBeCloseTo(18.35, 0);
+    expect(result.diagnostics.logLikelihood).toBeCloseTo(900.181063799492, 0);
+    expect(result.diagnostics.aic).toBeCloseTo(-1776.362127598984, 0);
   });
 });
 

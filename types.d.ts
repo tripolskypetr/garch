@@ -630,6 +630,14 @@ declare function nelderMeadMultiStart(fn: (x: number[]) => number, x0: number[],
     maxIter?: number;
     tol?: number;
     restarts?: number;
+    /**
+     * Additional explicit starting points, each run through a full NM pass.
+     * The perturbation restarts below scale x0 multiplicatively, so they
+     * preserve its shape — basins whose shape differs from x0 (e.g. far-lag
+     * weight structures) are unreachable from x0 alone and must be seeded
+     * explicitly.
+     */
+    extraStarts?: number[][];
 }): OptimizerResult;
 
 export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, backtestStats, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, empiricalQuantile, expectedAbsStudentT, garmanKlassVariance, incompleteBeta, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, probit, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTCdf, studentTNegLL, studentTProbit, validateCandles, yangZhangVariance };

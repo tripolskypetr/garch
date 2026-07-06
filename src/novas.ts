@@ -1,5 +1,5 @@
 import type { Candle, NoVaSParams, CalibrationResult, VolatilityForecast } from './types.js';
-import { nelderMeadMultiStart } from './optimizer.js';
+import { nelderMead, nelderMeadMultiStart } from './optimizer.js';
 import {
   calculateReturns,
   calculateReturnsFromPrices,
@@ -146,7 +146,98 @@ export class NoVaS {
       x0.push(0.9 * (1 - lambda) * Math.pow(lambda, j - 1));
     }
 
-    const result = nelderMeadMultiStart(objectiveD2, x0, { maxIter, tol, restarts: 6 });
+    // Screening: the multi-start perturbation scales x0 multiplicatively and
+    // preserves its exponential-decay shape, so far-lag weight structures are
+    // unreachable from x0 alone (measured: 5.6× worse D² on two-spike ARCH
+    // ground truth). D² costs one pass to evaluate, so scan a deterministic
+    // low-discrepancy cloud of sparse weight shapes and hand the best few to
+    // Nelder-Mead as explicit extra starts.
+    const screened: Array<{ d2: number; w: number[] }> = [];
+    {
+      // Kronecker sequence: one irrational stride per dimension
+      const strides: number[] = [];
+      for (let i = 0, prime = 2; i <= p + 1; prime++) {
+        let isPrime = true;
+        for (let q = 2; q * q <= prime; q++) if (prime % q === 0) { isPrime = false; break; }
+        if (!isPrime) continue;
+        strides.push(Math.sqrt(prime) % 1);
+        i++;
+      }
+      for (let s = 1; s <= 384; s++) {
+        // a0 log-uniform in [0.01, 1]·initVar
+        const a0 = initVar * Math.pow(10, ((s * strides[0]) % 1) * 2 - 2);
+        const raw: number[] = [];
+        let rawSum = 0;
+        for (let j = 1; j <= p; j++) {
+          // ~half the lags exactly zero — spikes and gaps are in the span
+          const u = (s * strides[j]) % 1;
+          const v = Math.max(0, u * 2 - 1);
+          raw.push(v);
+          rawSum += v;
+        }
+        if (rawSum <= 0) continue;
+        const target = 0.1 + 0.85 * ((s * strides[p + 1]) % 1);
+        const w = [a0, ...raw.map(v => (v * target) / rawSum)];
+        screened.push({ d2: objectiveD2(w), w });
+      }
+      screened.sort((a, b) => a.d2 - b.d2);
+    }
+    const extraStarts = screened.slice(0, 3).map(c => c.w);
+
+    // Stage-2 OLS (RV_t ~ β₀ + β₁·σ²_t) for a given weight vector.
+    // σ²_t is built from r2[t-1..t-p], so it already IS the one-step-ahead
+    // prediction of rv[t] — pairing it with r2[t+1] (as before) calibrated
+    // β one bar off from how getForecastVarianceSeries and forecast use it.
+    // Used both to pick among D² candidates and for the final rescaling.
+    const stage2 = (w: number[]): { beta0: number; beta1: number; rss: number; r2: number } | null => {
+      const dv = this.getVarianceSeriesInternal(w);
+      let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0, count = 0;
+      for (let t = p; t < n; t++) {
+        const x = dv[t];
+        const y = r2[t];
+        sumX += x;
+        sumY += y;
+        sumXX += x * x;
+        sumXY += x * y;
+        count++;
+      }
+      const denom = count * sumXX - sumX * sumX;
+      if (Math.abs(denom) < 1e-30) return null;
+      const beta1 = (count * sumXY - sumX * sumY) / denom;
+      const beta0 = (sumY - beta1 * sumX) / count;
+      const yMean = sumY / count;
+      let rss = 0, tss = 0;
+      for (let t = p; t < n; t++) {
+        const yHat = beta0 + beta1 * dv[t];
+        rss += (r2[t] - yHat) ** 2;
+        tss += (r2[t] - yMean) ** 2;
+      }
+      return { beta0, beta1, rss, r2: tss > 0 ? 1 - rss / tss : 0 };
+    };
+
+    // D² is underdetermined: two moment conditions (skewness, kurtosis)
+    // constrain p+1 weights, so its minimum is a manifold and near-zero D²
+    // differences are sampling noise — sd of (K−3)² at n ≈ 500 is ~0.05.
+    // Run NM from the exp-decay seed and from each screened start, then
+    // among candidates within that noise floor of the best D² pick the best
+    // RV forecaster: normality identifies the set, prediction picks the point.
+    const D2_NOISE = 0.05;
+    const candidateRuns = [
+      nelderMeadMultiStart(objectiveD2, x0, { maxIter, tol, restarts: 6 }),
+      ...extraStarts.map(s => nelderMead(objectiveD2, s, { maxIter, tol })),
+    ];
+    const bestD2 = Math.min(...candidateRuns.map(r => r.fx));
+    let result = candidateRuns[0];
+    let bestRss = Infinity;
+    for (const run of candidateRuns) {
+      if (run.fx > bestD2 + D2_NOISE) continue;
+      const s2 = stage2(run.x.map(Math.abs));
+      const rss = s2 ? s2.rss : Infinity;
+      if (rss < bestRss || (rss === bestRss && run.fx < result.fx)) {
+        bestRss = rss;
+        result = run;
+      }
+    }
 
     // Extract final weights (abs for constraint enforcement)
     const weights = result.x.map(w => Math.abs(w));
@@ -164,39 +255,10 @@ export class NoVaS {
     // D² weights discover lag structure; OLS rescales for forecast accuracy.
     // Only 2 parameters → robust on small samples with noisy per-candle RV.
     const d2Variance = this.getVarianceSeriesInternal(weights);
-    let forecastWeights: number[];
-    let olsR2: number;
-    try {
-      let sumX = 0, sumY = 0, sumXX = 0, sumXY = 0, count = 0;
-      for (let t = p; t < n - 1; t++) {
-        const x = d2Variance[t];
-        const y = r2[t + 1];
-        sumX += x;
-        sumY += y;
-        sumXX += x * x;
-        sumXY += x * y;
-        count++;
-      }
-      const denom = count * sumXX - sumX * sumX;
-      if (Math.abs(denom) < 1e-30) throw new Error('Degenerate variance series');
-      const beta1 = (count * sumXY - sumX * sumY) / denom;
-      const beta0 = (sumY - beta1 * sumX) / count;
-      forecastWeights = [beta0, beta1];
-
-      // R²
-      const yMean = sumY / count;
-      let rss = 0, tss = 0;
-      for (let t = p; t < n - 1; t++) {
-        const yHat = beta0 + beta1 * d2Variance[t];
-        rss += (r2[t + 1] - yHat) ** 2;
-        tss += (r2[t + 1] - yMean) ** 2;
-      }
-      olsR2 = tss > 0 ? 1 - rss / tss : 0;
-    } catch {
-      // OLS failed — fall back to identity rescaling [0, 1]
-      forecastWeights = [0, 1];
-      olsR2 = 0;
-    }
+    const s2Final = stage2(weights);
+    // OLS failed (degenerate variance series) — fall back to identity rescaling
+    const forecastWeights = s2Final ? [s2Final.beta0, s2Final.beta1] : [0, 1];
+    const olsR2 = s2Final ? s2Final.r2 : 0;
 
     // Student-t log-likelihood for AIC comparison with GARCH/EGARCH/HAR-RV
     const df = profileStudentTDf(returns, d2Variance);

@@ -163,13 +163,26 @@ export function nelderMeadMultiStart(
     maxIter?: number;
     tol?: number;
     restarts?: number;
+    /**
+     * Additional explicit starting points, each run through a full NM pass.
+     * The perturbation restarts below scale x0 multiplicatively, so they
+     * preserve its shape — basins whose shape differs from x0 (e.g. far-lag
+     * weight structures) are unreachable from x0 alone and must be seeded
+     * explicitly.
+     */
+    extraStarts?: number[][];
   } = {}
 ): OptimizerResult {
-  const { maxIter = 1000, tol = 1e-8, restarts = 3 } = options;
+  const { maxIter = 1000, tol = 1e-8, restarts = 3, extraStarts = [] } = options;
   const n = x0.length;
 
   // Run from original starting point
   let best = nelderMead(fn, x0, { maxIter, tol });
+
+  for (const start of extraStarts) {
+    const result = nelderMead(fn, start, { maxIter, tol });
+    if (result.fx < best.fx) best = result;
+  }
 
   // Scheduled restarts, then keep going while they pay off.
   // An explicit restarts=0 opts out of multi-start entirely.
