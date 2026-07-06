@@ -37,7 +37,9 @@ export {
   predictRange,
   backtest,
   backtestStats,
+  kupiecTest,
   createPredictor,
+  checkData,
   computeSeasonality,
   deseasonalizeCandles,
   type Seasonality,
@@ -45,7 +47,20 @@ export {
   type BacktestStats,
   type CandleInterval,
   type PredictionResult,
+  type PredictionWarning,
+  type WarningCode,
+  type PredictOptions,
+  type DataIssue,
+  type DataReport,
 } from './predict.js';
+
+// Errors — catch by class instead of parsing messages
+export {
+  GarchError,
+  NotEnoughDataError,
+  BadDataError,
+  InvalidArgumentError,
+} from './errors.js';
 
 // Optimizer (for advanced usage)
 export { nelderMead, nelderMeadMultiStart } from './optimizer.js';

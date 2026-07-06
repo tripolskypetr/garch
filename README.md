@@ -172,7 +172,12 @@ Same walk-forward loop as `backtest`, but returns the raw calibration numbers in
 import { backtestStats } from 'garch';
 
 const stats = backtestStats(candles, '4h', 0.95);
-// { hits: 61, total: 66, hitRate: 92.4 }  → compare against 95
+// {
+//   hits: 61, total: 66, hitRate: 92.4,
+//   verdict: 'well-calibrated',   // Kupiec test: is 92.4 vs 95 failure or noise?
+//   pValue: 0.38,
+//   message: 'Coverage 92.4% vs nominal 95.0% over 66 points is consistent with a calibrated corridor (Kupiec p=0.3800).'
+// }
 
 // Every test point refits all 5 models, so by default the test span is
 // subsampled to at most ~100 refits. Control it explicitly:
@@ -187,10 +192,140 @@ interface BacktestStats {
   hits: number;     // closes that landed inside the corridor
   total: number;    // walk-forward predictions made
   hitRate: number;  // hits/total · 100 — compare with confidence · 100
+  verdict: 'well-calibrated' | 'too-narrow' | 'too-wide' | 'inconclusive';
+  pValue: number;   // Kupiec POF test — probability the gap is noise
+  message: string;  // plain-language interpretation with the numbers filled in
 }
 ```
 
+`verdict` answers the question a raw hit rate cannot: 63% observed against 68%
+nominal is *fine* on 100 points (noise) and *broken* on 2,000 points. `too-narrow`
+means real risk exceeds what the corridor shows; `too-wide` means decisions based
+on it are overly conservative.
+
 ---
+
+### `checkData(candles, interval)`
+
+Pre-flight check for a new data source — run it once before wiring a feed into
+`predict`. Errors are conditions `predict` would throw on; warnings degrade
+quality but do not block.
+
+```typescript
+import { checkData } from 'garch';
+
+const report = checkData(candles, '1h');
+// {
+//   ok: false,
+//   issues: [
+//     { code: 'UNSORTED', severity: 'error',
+//       message: 'Candles are not sorted by timestamp (index 812) — sort ascending before calling. Check your data feed.' },
+//     { code: 'DATA_GAPS', severity: 'warning',
+//       message: '~17 missing bars (2.1%) detected from timestamps — the seasonal profile and lag structure may be distorted. Check your feed for outages.' },
+//   ],
+//   recommendedCandles: 500,
+// }
+```
+
+Detects: too few candles, broken OHLC (with the failing index), unsorted or
+duplicated timestamps, gaps, candle spacing that contradicts the `interval`
+argument, and feeds where too many candles have `high === low`.
+
+---
+
+### `createPredictor(interval)`
+
+Stateful predictor for rolling use (bots, backtest loops). Each call warm-starts
+every optimizer from the previous window's optimum — same math, roughly 3× faster
+than calling `predict` in a loop. State is per-instrument: one predictor per symbol.
+
+```typescript
+import { createPredictor } from 'garch';
+
+const predictor = createPredictor('1h');
+setInterval(async () => {
+  const candles = await fetchCandles('BTCUSDT', '1h', 500);
+  const res = predictor.predict(candles, { confidence: 0.9 });
+  // ...
+}, 60 * 60 * 1000);
+```
+
+---
+
+## Warnings & errors
+
+`predict` explains itself instead of failing silently. Every result carries
+`warnings` (plain-language, with a `critical` flag — `reliable` is simply
+"no critical warning fired"), `modelWeights` (which model families are driving
+the forecast) and `seasonalityDetected`:
+
+```typescript
+const res = predict(candles, '1h', { confidence: 0.9 });
+if (!res.reliable) {
+  for (const w of res.warnings) console.log(`[${w.code}] ${w.message}`);
+  // [RESIDUAL_AUTOCORRELATION] Squared residuals stay autocorrelated (Ljung-Box p=0.012) —
+  // the model did not fully capture volatility clustering; the corridor may understate risk.
+}
+console.log(res.modelWeights); // { garch: 0.58, 'har-rv': 0.42 }
+```
+
+Errors are typed — catch by class, not by parsing messages:
+
+```typescript
+import { NotEnoughDataError, BadDataError, InvalidArgumentError } from 'garch';
+
+try {
+  const res = predict(candles, '1h');
+} catch (e) {
+  if (e instanceof NotEnoughDataError) await fetchMoreHistory();
+  else if (e instanceof BadDataError) alertDataPipeline(e.message); // broken OHLC, unsorted/duplicate timestamps
+  else if (e instanceof InvalidArgumentError) throw e;              // bug at the call site
+  else throw e;
+}
+```
+
+## Recipes
+
+**Stop-loss / take-profit from the corridor.** `lowerPrice` at confidence 0.90 is
+the level price stays above with ~95% probability (each tail carries 5%):
+
+```typescript
+const res = predictor.predict(candles, { confidence: 0.9 });
+if (res.reliable) {
+  placeOrder({ side: 'buy', stopLoss: res.lowerPrice, takeProfit: res.upperPrice });
+}
+```
+
+**Position sizing by volatility.** Risk a fixed dollar amount per corridor width
+instead of a fixed position size:
+
+```typescript
+const riskPerTrade = 100; // dollars you accept losing if price hits the lower band
+const size = riskPerTrade / (res.currentPrice - res.lowerPrice);
+```
+
+**Volatility filter.** Skip entries when the model cannot be trusted or the
+expected move is too small to cover fees:
+
+```typescript
+const feePct = 0.1; // round-trip, percent
+if (!res.reliable || res.movePercent < feePct * 2) return; // stand aside
+```
+
+**Calibration monitoring.** Once a day, verify the corridor still tells the truth
+on your instrument — and read the verdict, not the raw rate:
+
+```typescript
+const stats = backtestStats(candles, '1h', 0.9);
+if (stats.verdict === 'too-narrow') notify(stats.message); // real risk > shown risk
+```
+
+**Multi-candle horizon.** Corridor for "where will price be 12 hours from now"
+on 1h candles:
+
+```typescript
+const res = predictor.predictRange(candles, 12, { confidence: 0.95 });
+```
 
 ## Supported Intervals
 
@@ -207,7 +342,7 @@ interface BacktestStats {
 | `6h` | 150 | 300 | 1,460 | ~37 days |
 | `8h` | 150 | 300 | 1,095 | ~50 days |
 
-For intervals below 1h, per-candle Parkinson RV is noisier — more data helps OLS and QLIKE model selection. A `console.warn` is emitted when candle count is below the recommended value. Always check `reliable: true` in the output.
+For intervals below 1h, per-candle Parkinson RV is noisier — more data helps OLS and QLIKE model selection. When the candle count is below the recommended value the result carries a non-critical `LOW_SAMPLE` warning. Always check `reliable: true` (and read `warnings`) in the output.
 
 ## Timeframes
 

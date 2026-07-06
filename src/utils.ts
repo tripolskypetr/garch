@@ -1,4 +1,5 @@
 import type { Candle, LeverageStats } from './types.js';
+import { BadDataError } from './errors.js';
 
 /**
  * Validate OHLC integrity. Garbage candles (NaN, non-positive prices,
@@ -9,10 +10,10 @@ export function validateCandles(candles: Candle[]): void {
     const c = candles[i];
     if (!isFinite(c.open) || c.open <= 0 || !isFinite(c.high) || c.high <= 0
       || !isFinite(c.low) || c.low <= 0 || !isFinite(c.close) || c.close <= 0) {
-      throw new Error(`Invalid OHLC at candle ${i}: open=${c.open} high=${c.high} low=${c.low} close=${c.close}`);
+      throw new BadDataError(`Invalid OHLC at candle ${i}: open=${c.open} high=${c.high} low=${c.low} close=${c.close}`);
     }
     if (c.high < c.low) {
-      throw new Error(`Invalid candle ${i}: high (${c.high}) < low (${c.low})`);
+      throw new BadDataError(`Invalid candle ${i}: high (${c.high}) < low (${c.low})`);
     }
     // Open/close must lie inside [low, high] — Parkinson, Garman-Klass and
     // Yang-Zhang all assume it; violated candles silently distort every
@@ -20,7 +21,7 @@ export function validateCandles(candles: Candle[]): void {
     const bodyHigh = Math.max(c.open, c.close);
     const bodyLow = Math.min(c.open, c.close);
     if (c.high < bodyHigh * (1 - 1e-9) || c.low > bodyLow * (1 + 1e-9)) {
-      throw new Error(
+      throw new BadDataError(
         `Invalid candle ${i}: open/close outside [low, high] (open=${c.open} high=${c.high} low=${c.low} close=${c.close})`,
       );
     }
@@ -48,7 +49,7 @@ export function calculateReturns(candles: Candle[]): number[] {
   const returns: number[] = [];
   for (let i = 1; i < candles.length; i++) {
     if (!(candles[i].close > 0) || !(candles[i - 1].close > 0)) {
-      throw new Error(`Invalid close price at index ${i}`);
+      throw new BadDataError(`Invalid close price at index ${i}`);
     }
     returns.push(Math.log(candles[i].close / candles[i - 1].close));
   }
@@ -62,7 +63,7 @@ export function calculateReturnsFromPrices(prices: number[]): number[] {
   const returns: number[] = [];
   for (let i = 1; i < prices.length; i++) {
     if (!(prices[i] > 0 && Number.isFinite(prices[i])) || !(prices[i - 1] > 0 && Number.isFinite(prices[i - 1]))) {
-      throw new Error(`Invalid price at index ${i}`);
+      throw new BadDataError(`Invalid price at index ${i}`);
     }
     returns.push(Math.log(prices[i] / prices[i - 1]));
   }

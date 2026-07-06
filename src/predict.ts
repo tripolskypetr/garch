@@ -12,6 +12,7 @@ import { GjrGarch } from './gjr-garch.js';
 import { RealizedGarch } from './realized-garch.js';
 import { HarRv } from './har.js';
 import { NoVaS } from './novas.js';
+import { NotEnoughDataError, BadDataError, InvalidArgumentError } from './errors.js';
 import {
   ljungBox,
   calculateReturns,
@@ -68,6 +69,23 @@ const INTERVALS_PER_YEAR: Record<CandleInterval, number> = {
   '8h': 1_095,
 };
 
+export type WarningCode =
+  | 'LOW_SAMPLE'
+  | 'NOT_CONVERGED'
+  | 'HIGH_PERSISTENCE'
+  | 'DEGENERATE_VARIANCE'
+  | 'RESIDUAL_AUTOCORRELATION'
+  | 'DATA_GAPS'
+  | 'INTERVAL_MISMATCH';
+
+export interface PredictionWarning {
+  code: WarningCode;
+  /** Plain-language explanation with a suggested action. */
+  message: string;
+  /** true when this warning alone makes the forecast unreliable. */
+  critical: boolean;
+}
+
 export interface PredictionResult {
   /** Reference price used to compute the corridor (last close or the value passed as `currentPrice`). */
   currentPrice: number;
@@ -95,22 +113,242 @@ export interface PredictionResult {
   zScoreUp: number;
   /** Lower-tail multiplier: `lowerPrice = currentPrice · exp(−zScoreDown · sigma)`. */
   zScoreDown: number;
-  /** `true` when the model converged, persistence < 0.999, and Ljung-Box p-value ≥ 0.05. */
+  /** `true` when no critical warning fired (model converged, persistence < 0.999, Ljung-Box p ≥ 0.05, non-degenerate variance). */
   reliable: boolean;
+  /**
+   * Everything the pipeline noticed, in plain language: why `reliable` is
+   * false (critical warnings) plus non-critical data quality notes.
+   */
+  warnings: PredictionWarning[];
+  /** Combination weights per model family (out-of-sample QLIKE softmax), summing to 1. */
+  modelWeights: Partial<Record<PredictionResult['modelType'], number>>;
+  /** `true` when a significant diurnal volatility profile was detected and removed before fitting. */
+  seasonalityDetected: boolean;
+}
+
+function validateInterval(interval: CandleInterval): void {
+  if (!(interval in INTERVALS_PER_YEAR)) {
+    throw new InvalidArgumentError(
+      `Unknown interval '${interval}' — valid intervals: ${Object.keys(INTERVALS_PER_YEAR).join(', ')}`,
+    );
+  }
+}
+
+function validateConfidence(confidence: number): void {
+  if (!(confidence > 0 && confidence < 1)) {
+    const hint = confidence > 1 && confidence <= 100
+      ? ` (did you pass percent? Use a fraction: ${confidence / 100})`
+      : '';
+    throw new InvalidArgumentError(`confidence must be in (0, 1), got ${confidence}${hint}`);
+  }
+}
+
+export interface PredictOptions {
+  /** Reference price for the corridor; defaults to the last close. */
+  currentPrice?: number | null;
+  /** Two-sided probability in (0,1). Default ≈0.6827 (±1σ). */
+  confidence?: number;
+}
+
+/**
+ * Accept both the positional form (currentPrice, confidence) and an options
+ * object — `predict(candles, '1h', { confidence: 0.9 })` cannot be confused
+ * with a price the way `predict(candles, '1h', 0.9)` can.
+ */
+function resolvePredictArgs(
+  candles: Candle[],
+  currentPriceOrOptions: number | null | undefined | PredictOptions,
+  confidence: number,
+): { currentPrice: number; confidence: number } {
+  let price: number | null | undefined;
+  let conf = confidence;
+  if (currentPriceOrOptions !== null && typeof currentPriceOrOptions === 'object') {
+    price = currentPriceOrOptions.currentPrice;
+    conf = currentPriceOrOptions.confidence ?? confidence;
+  } else {
+    price = currentPriceOrOptions;
+  }
+  validateConfidence(conf);
+  if (price !== null && price !== undefined) {
+    if (!(Number.isFinite(price) && price > 0)) {
+      throw new InvalidArgumentError(`currentPrice must be a positive finite number, got ${price}`);
+    }
+    return { currentPrice: price, confidence: conf };
+  }
+  return { currentPrice: candles[candles.length - 1].close, confidence: conf };
 }
 
 function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
+  validateInterval(interval);
   const min = MIN_CANDLES[interval];
   if (candles.length < min) {
-    throw new Error(`Need at least ${min} candles for ${interval} interval, got ${candles.length}`);
+    throw new NotEnoughDataError(`Need at least ${min} candles for ${interval} interval, got ${candles.length}`);
   }
   validateCandles(candles);
+}
+
+// ── Data quality ──────────────────────────────────────────────
+
+/** Timestamps in ms (seconds are auto-scaled), or null when any candle lacks one. */
+function getTimestampsMs(candles: Candle[]): number[] | null {
+  if (!candles.every(c => Number.isFinite(c.timestamp))) return null;
+  return candles.map(c => (c.timestamp! < 1e12 ? c.timestamp! * 1000 : c.timestamp!));
+}
+
+/** Hard failures on broken timestamp ordering — garbage-in guards for predict. */
+function assertTimestampOrder(candles: Candle[]): void {
+  const ts = getTimestampsMs(candles);
+  if (!ts) return;
+  for (let i = 1; i < ts.length; i++) {
+    if (ts[i] < ts[i - 1]) {
+      throw new BadDataError(
+        `Candles are not sorted by timestamp (index ${i}) — sort ascending before calling. Check your data feed.`,
+      );
+    }
+    if (ts[i] === ts[i - 1]) {
+      throw new BadDataError(
+        `Duplicate candle timestamp at index ${i} — deduplicate your data feed before calling.`,
+      );
+    }
+  }
+}
+
+function formatSpacing(ms: number): string {
+  if (ms >= 3_600_000) return `${(ms / 3_600_000).toFixed(1)}h`;
+  if (ms >= 60_000) return `${(ms / 60_000).toFixed(1)}m`;
+  return `${(ms / 1000).toFixed(0)}s`;
+}
+
+/** Non-critical data observations appended to PredictionResult.warnings. */
+function collectDataWarnings(
+  candles: Candle[],
+  interval: CandleInterval,
+  warnings: PredictionWarning[],
+): void {
   const recommended = RECOMMENDED_CANDLES[interval];
   if (candles.length < recommended) {
-    /*console.warn(
-      `[garch] ${interval}: ${candles.length} candles provided, recommend ≥${recommended} for reliable results. Check reliable: true in output.`,
-    );*/
+    warnings.push({
+      code: 'LOW_SAMPLE',
+      critical: false,
+      message: `${candles.length} candles provided; ≥${recommended} recommended for ${interval} — estimates are noisier on short samples.`,
+    });
   }
+
+  const ts = getTimestampsMs(candles);
+  if (!ts || ts.length < 3) return;
+  const barMs = YEAR_MS / INTERVALS_PER_YEAR[interval];
+
+  const spacings = [];
+  for (let i = 1; i < ts.length; i++) spacings.push(ts[i] - ts[i - 1]);
+  spacings.sort((a, b) => a - b);
+  const median = spacings[Math.floor(spacings.length / 2)];
+  if (median > 0 && Math.abs(median / barMs - 1) > 0.25) {
+    warnings.push({
+      code: 'INTERVAL_MISMATCH',
+      critical: false,
+      message: `Candle spacing looks like ~${formatSpacing(median)} while interval is '${interval}' — check the interval argument.`,
+    });
+    return; // gap counting is meaningless against the wrong bar size
+  }
+
+  let gaps = 0;
+  for (const dt of spacings) {
+    if (dt > barMs * 1.5) gaps += Math.round(dt / barMs) - 1;
+  }
+  const gapPct = (gaps / (candles.length + gaps)) * 100;
+  if (gapPct > 1) {
+    warnings.push({
+      code: 'DATA_GAPS',
+      critical: false,
+      message: `~${gaps} missing bars (${gapPct.toFixed(1)}%) detected from timestamps — the seasonal profile and lag structure may be distorted. Check your feed for outages.`,
+    });
+  }
+}
+
+export interface DataIssue {
+  code:
+    | 'TOO_FEW_CANDLES'
+    | 'INVALID_OHLC'
+    | 'UNSORTED'
+    | 'DUPLICATE_TIMESTAMPS'
+    | 'LOW_SAMPLE'
+    | 'DATA_GAPS'
+    | 'INTERVAL_MISMATCH'
+    | 'FLAT_CANDLES';
+  message: string;
+  severity: 'error' | 'warning';
+}
+
+export interface DataReport {
+  /** false when any error-severity issue is present (predict would throw). */
+  ok: boolean;
+  issues: DataIssue[];
+  recommendedCandles: number;
+}
+
+/**
+ * Pre-flight data check with plain-language, actionable messages: run it on
+ * a new data source before wiring it into predict. Errors are conditions
+ * predict would throw on; warnings degrade quality but do not block.
+ */
+export function checkData(candles: Candle[], interval: CandleInterval): DataReport {
+  validateInterval(interval);
+  const issues: DataIssue[] = [];
+  const recommended = RECOMMENDED_CANDLES[interval];
+
+  if (candles.length < MIN_CANDLES[interval]) {
+    issues.push({
+      code: 'TOO_FEW_CANDLES',
+      severity: 'error',
+      message: `Need at least ${MIN_CANDLES[interval]} candles for ${interval}, got ${candles.length} — fetch more history.`,
+    });
+  }
+
+  try {
+    validateCandles(candles);
+  } catch (e) {
+    issues.push({
+      code: 'INVALID_OHLC',
+      severity: 'error',
+      message: `${(e as Error).message}. Broken OHLC usually means a feed/parsing bug — check the failing candle in your pipeline.`,
+    });
+  }
+
+  try {
+    assertTimestampOrder(candles);
+  } catch (e) {
+    const msg = (e as Error).message;
+    issues.push({
+      code: msg.includes('Duplicate') ? 'DUPLICATE_TIMESTAMPS' : 'UNSORTED',
+      severity: 'error',
+      message: msg,
+    });
+  }
+
+  const soft: PredictionWarning[] = [];
+  collectDataWarnings(candles, interval, soft);
+  for (const w of soft) {
+    issues.push({ code: w.code as DataIssue['code'], severity: 'warning', message: w.message });
+  }
+
+  let flat = 0;
+  for (const c of candles) {
+    if (c.high === c.low) flat++;
+  }
+  const flatPct = (flat / Math.max(candles.length, 1)) * 100;
+  if (flatPct > 20) {
+    issues.push({
+      code: 'FLAT_CANDLES',
+      severity: 'warning',
+      message: `${flatPct.toFixed(0)}% of candles have high === low — range-based estimators degrade to squared returns. Synthetic or illiquid feed?`,
+    });
+  }
+
+  return {
+    ok: !issues.some(i => i.severity === 'error'),
+    issues,
+    recommendedCandles: recommended,
+  };
 }
 
 // ── Intraday seasonality ──────────────────────────────────────
@@ -304,6 +542,8 @@ interface FitResult {
   zSorted: number[];
   /** Kept combination members with recursions for horizon simulation. */
   simMembers: SimMember[];
+  /** Combination weight per model family, summing to 1. */
+  weights: Partial<Record<ModelType, number>>;
 }
 
 /**
@@ -679,6 +919,10 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number, warm
     warmup: Math.max(...kept.map(m => m.warmup)),
     zSorted: [],
     simMembers: kept.map(m => ({ ...m.sim, weight: m.weight })),
+    weights: kept.reduce<Partial<Record<ModelType, number>>>((acc, m) => {
+      acc[m.modelType] = (acc[m.modelType] ?? 0) + m.weight;
+      return acc;
+    }, {}),
   };
 
   // Calibrate the combination to the return scale: QLIKE picks the best RV
@@ -962,8 +1206,22 @@ function corridorZBounds(
   return { up, down };
 }
 
-function checkReliable(fit: FitResult): boolean {
-  if (!fit.converged || fit.persistence >= 0.999) return false;
+/** Reliability checks as explainable warnings; `reliable` = none critical fired. */
+function collectFitWarnings(fit: FitResult, warnings: PredictionWarning[]): void {
+  if (!fit.converged) {
+    warnings.push({
+      code: 'NOT_CONVERGED',
+      critical: true,
+      message: 'The volatility optimizer did not converge — the corridor cannot be trusted. More candles usually helps.',
+    });
+  }
+  if (fit.persistence >= 0.999) {
+    warnings.push({
+      code: 'HIGH_PERSISTENCE',
+      critical: true,
+      message: 'Volatility persistence hit the stationarity boundary (≥0.999) — long-run variance is unidentified and the corridor is unstable.',
+    });
+  }
 
   // Degenerate forecast: variance collapsed to the numerical clamp
   // (flat market, HAR/NoVaS 1e-20 floor) — a zero-width corridor is never
@@ -971,8 +1229,14 @@ function checkReliable(fit: FitResult): boolean {
   // so legitimately low-volatility series are not flagged; a zero-variance
   // (flat) return series is always degenerate.
   const sv = sampleVariance(fit.returns);
-  if (!(sv > 0)) return false;
-  if (!(fit.forecast.variance[0] > sv * 1e-8)) return false;
+  if (!(sv > 0) || !(fit.forecast.variance[0] > sv * 1e-8)) {
+    warnings.push({
+      code: 'DEGENERATE_VARIANCE',
+      critical: true,
+      message: 'Forecast variance collapsed to the numerical floor (flat or degenerate market) — a zero-width corridor is not a forecast.',
+    });
+    return; // Ljung-Box on degenerate residuals is meaningless
+  }
 
   // Ljung-Box on squared standardized residuals
   const { returns, varianceSeries } = fit;
@@ -981,7 +1245,13 @@ function checkReliable(fit: FitResult): boolean {
     return z * z;
   });
   const lb = ljungBox(squared, 10);
-  return lb.pValue >= 0.05;
+  if (!(lb.pValue >= 0.05)) {
+    warnings.push({
+      code: 'RESIDUAL_AUTOCORRELATION',
+      critical: true,
+      message: `Squared residuals stay autocorrelated (Ljung-Box p=${lb.pValue.toFixed(3)}) — the model did not fully capture volatility clustering; the corridor may understate risk.`,
+    });
+  }
 }
 
 // ── Prediction ────────────────────────────────────────────────
@@ -998,8 +1268,12 @@ function runPredict(
   // simulation are all O(steps) — an unbounded horizon is unbounded work,
   // and a corridor further out than the whole sample is meaningless anyway.
   if (steps > candles.length) {
-    throw new Error(`steps must not exceed the sample length (${candles.length}), got ${steps}`);
+    throw new InvalidArgumentError(`steps must not exceed the sample length (${candles.length}), got ${steps}`);
   }
+  assertTimestampOrder(candles);
+  const warnings: PredictionWarning[] = [];
+  collectDataWarnings(candles, interval, warnings);
+
   const periodsPerYear = INTERVALS_PER_YEAR[interval];
   const nReturns = candles.length - 1;
 
@@ -1028,6 +1302,8 @@ function runPredict(
   const upperPrice = currentPrice * Math.exp(zUp * sigma);
   const lowerPrice = currentPrice * Math.exp(-zDown * sigma);
 
+  collectFitWarnings(fit, warnings);
+
   return {
     modelType: fit.modelType,
     currentPrice,
@@ -1040,7 +1316,10 @@ function runPredict(
     movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,
     lowerPrice,
-    reliable: checkReliable(fit),
+    reliable: warnings.every(w => !w.critical),
+    warnings,
+    modelWeights: fit.weights,
+    seasonalityDetected: season !== null,
   };
 }
 
@@ -1052,23 +1331,24 @@ function runPredict(
  * predictor across symbols.
  */
 export function createPredictor(interval: CandleInterval): {
-  predict: (candles: Candle[], currentPrice?: number | null, confidence?: number) => PredictionResult;
-  predictRange: (candles: Candle[], steps: number, currentPrice?: number | null, confidence?: number) => PredictionResult;
+  predict: (candles: Candle[], currentPriceOrOptions?: number | null | PredictOptions, confidence?: number) => PredictionResult;
+  predictRange: (candles: Candle[], steps: number, currentPriceOrOptions?: number | null | PredictOptions, confidence?: number) => PredictionResult;
 } {
+  validateInterval(interval);
   const warm: WarmState = {};
   return {
-    predict(candles, currentPrice?, confidence = 0.6827) {
+    predict(candles, currentPriceOrOptions?, confidence = 0.6827) {
       assertMinCandles(candles, interval);
-      const price = currentPrice || candles[candles.length - 1].close;
-      return runPredict(candles, interval, 1, price, confidence, warm);
+      const args = resolvePredictArgs(candles, currentPriceOrOptions, confidence);
+      return runPredict(candles, interval, 1, args.currentPrice, args.confidence, warm);
     },
-    predictRange(candles, steps, currentPrice?, confidence = 0.6827) {
+    predictRange(candles, steps, currentPriceOrOptions?, confidence = 0.6827) {
       assertMinCandles(candles, interval);
       if (!Number.isFinite(steps) || steps < 1) {
-        throw new Error(`steps must be a number >= 1, got ${steps}`);
+        throw new InvalidArgumentError(`steps must be a number >= 1, got ${steps}`);
       }
-      const price = currentPrice || candles[candles.length - 1].close;
-      return runPredict(candles, interval, Math.floor(steps), price, confidence, warm);
+      const args = resolvePredictArgs(candles, currentPriceOrOptions, confidence);
+      return runPredict(candles, interval, Math.floor(steps), args.currentPrice, args.confidence, warm);
     },
   };
 }
@@ -1090,12 +1370,12 @@ export function createPredictor(interval: CandleInterval): {
 export function predict(
   candles: Candle[],
   interval: CandleInterval,
-  currentPrice?: number | null,
+  currentPriceOrOptions?: number | null | PredictOptions,
   confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
-  currentPrice = currentPrice || candles[candles.length - 1].close;
-  return runPredict(candles, interval, 1, currentPrice, confidence);
+  const args = resolvePredictArgs(candles, currentPriceOrOptions, confidence);
+  return runPredict(candles, interval, 1, args.currentPrice, args.confidence);
 }
 
 /**
@@ -1115,16 +1395,16 @@ export function predictRange(
   candles: Candle[],
   interval: CandleInterval,
   steps: number,
-  currentPrice?: number | null,
+  currentPriceOrOptions?: number | null | PredictOptions,
   confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
   if (!Number.isFinite(steps) || steps < 1) {
-    throw new Error(`steps must be a number >= 1, got ${steps}`);
+    throw new InvalidArgumentError(`steps must be a number >= 1, got ${steps}`);
   }
   steps = Math.floor(steps);
-  currentPrice = currentPrice || candles[candles.length - 1].close;
-  return runPredict(candles, interval, steps, currentPrice, confidence);
+  const args = resolvePredictArgs(candles, currentPriceOrOptions, confidence);
+  return runPredict(candles, interval, steps, args.currentPrice, args.confidence);
 }
 
 // ── Backtest ──────────────────────────────────────────────────
@@ -1138,6 +1418,67 @@ export interface BacktestStats {
   total: number;
   /** Empirical coverage in percent (0–100). Compare against `confidence · 100`. */
   hitRate: number;
+  /** Statistical judgment of the coverage against the nominal confidence (Kupiec POF test). */
+  verdict: 'well-calibrated' | 'too-narrow' | 'too-wide' | 'inconclusive';
+  /** Kupiec test p-value: probability of a coverage gap this large under correct calibration. */
+  pValue: number;
+  /** Plain-language interpretation of the verdict with the numbers filled in. */
+  message: string;
+}
+
+/**
+ * Kupiec (1995) proportion-of-failures test: is the observed hit rate
+ * statistically consistent with the nominal confidence, given how many
+ * walk-forward points there are? A raw hitRate of 63% vs nominal 68% means
+ * nothing without n — this answers "failure or noise" directly.
+ */
+export function kupiecTest(
+  hits: number,
+  total: number,
+  confidence: number,
+): Pick<BacktestStats, 'verdict' | 'pValue' | 'message'> {
+  const misses = total - hits;
+  const p = 1 - confidence; // nominal failure probability per observation
+  const pHat = total > 0 ? misses / total : 0;
+  const nominalPct = (confidence * 100).toFixed(1);
+  const coveragePct = total > 0 ? ((hits / total) * 100).toFixed(1) : '0';
+
+  // Binomial log-likelihood with the 0·ln(0) := 0 convention
+  const ll = (prob: number): number => {
+    let v = 0;
+    if (misses > 0) v += misses * Math.log(prob);
+    if (hits > 0) v += hits * Math.log(1 - prob);
+    return v;
+  };
+  const lr = pHat > 0 && pHat < 1 ? -2 * (ll(p) - ll(pHat)) : -2 * ll(p);
+  const pValue = chi2Survival(Math.max(lr, 0), 1);
+
+  if (total < 30) {
+    return {
+      verdict: 'inconclusive',
+      pValue,
+      message: `Only ${total} walk-forward points — too few to judge calibration. Aim for ≥30 (more candles or stride: 1).`,
+    };
+  }
+  if (pValue < 0.05) {
+    if (pHat > p) {
+      return {
+        verdict: 'too-narrow',
+        pValue,
+        message: `Coverage ${coveragePct}% is below the nominal ${nominalPct}% (Kupiec p=${pValue.toFixed(4)}) — the corridor is too narrow: real risk exceeds what it shows.`,
+      };
+    }
+    return {
+      verdict: 'too-wide',
+      pValue,
+      message: `Coverage ${coveragePct}% is above the nominal ${nominalPct}% (Kupiec p=${pValue.toFixed(4)}) — the corridor is too wide: decisions based on it are overly conservative.`,
+    };
+  }
+  return {
+    verdict: 'well-calibrated',
+    pValue,
+    message: `Coverage ${coveragePct}% vs nominal ${nominalPct}% over ${total} points is consistent with a calibrated corridor (Kupiec p=${pValue.toFixed(4)}).`,
+  };
 }
 
 /**
@@ -1192,7 +1533,7 @@ export function backtestStats(
     total++;
   }
 
-  return { hits, total, hitRate: (hits / total) * 100 };
+  return { hits, total, hitRate: (hits / total) * 100, ...kupiecTest(hits, total, confidence) };
 }
 
 /**
