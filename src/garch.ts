@@ -62,9 +62,20 @@ export class Garch {
   /**
    * Calibrate GARCH(1,1) parameters using Maximum Likelihood Estimation
    */
-  fit(options: { maxIter?: number; tol?: number } = {}): CalibrationResult<GarchParams> {
-    const { maxIter = 1000, tol = 1e-8 } = options;
+  fit(
+    options: { maxIter?: number; tol?: number; forgetting?: number; warmStart?: GarchParams } = {},
+  ): CalibrationResult<GarchParams> {
+    const { maxIter = 1000, tol = 1e-8, forgetting = 1 } = options;
     const n = this.returns.length;
+
+    // Exponential forgetting: observation t contributes with weight
+    // λ^(n−1−t) (newest = 1), so the fit adapts to regime shifts instead of
+    // weighting a year-old candle like yesterday's. λ = 1 disables.
+    const weights = new Array(n).fill(1);
+    if (forgetting < 1) {
+      for (let t = 0; t < n; t++) weights[t] = Math.pow(forgetting, n - 1 - t);
+    }
+    const wTotal = weights.reduce((a, b) => a + b, 0);
 
     // Calibrate in normalized space: returns are scaled to unit initial
     // variance, so the likelihood floors, penalty constants, and optimizer
@@ -90,7 +101,7 @@ export class Garch {
 
       const halfDfPlus1 = (df + 1) / 2;
       const dfMinus2 = df - 2;
-      const constant = n * (logGamma(halfDfPlus1) - logGamma(df / 2) - 0.5 * Math.log(Math.PI * dfMinus2));
+      const constant = wTotal * (logGamma(halfDfPlus1) - logGamma(df / 2) - 0.5 * Math.log(Math.PI * dfMinus2));
 
       let variance = initVar;
       let ll = 0;
@@ -104,7 +115,7 @@ export class Garch {
         if (variance <= varFloor) return 1e10;
 
         // Student-t log-likelihood
-        ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));
+        ll += weights[i] * (-0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance)));
       }
 
       return -(ll + constant);
@@ -118,7 +129,23 @@ export class Garch {
     const omega0 = initVar * (1 - alpha0 - beta0);
     const df0 = 5;
 
-    const result = nelderMeadMultiStart(negLogLikelihood, [omega0, alpha0, beta0, df0], { maxIter, tol, restarts: 3 });
+    // Warm start (previous window's optimum) replaces the cold seed: the
+    // multi-start perturbations then explore its neighborhood, and rolling
+    // refits converge in a fraction of the cold multi-start cost. The
+    // constraint set is window-independent, so a previous optimum is
+    // always feasible.
+    const wp = options.warmStart;
+    const warmValid = !!(wp && isFinite(wp.omega) && wp.omega > 0
+      && isFinite(wp.alpha) && isFinite(wp.beta) && isFinite(wp.df));
+    const x0 = warmValid
+      ? [wp!.omega * s2, wp!.alpha, wp!.beta, wp!.df]
+      : [omega0, alpha0, beta0, df0];
+
+    const result = nelderMeadMultiStart(negLogLikelihood, x0, {
+      maxIter,
+      tol,
+      restarts: warmValid ? 1 : 3,
+    });
 
     // Map back to the data scale: ω scales with variance, α/β/df are scale-free
     const [omegaScaled, alpha, beta, df] = result.x;

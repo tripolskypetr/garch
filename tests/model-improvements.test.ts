@@ -3,6 +3,7 @@ import { GjrGarch, calibrateGjrGarch } from '../src/gjr-garch.js';
 import { Egarch } from '../src/egarch.js';
 import {
   predict,
+  createPredictor,
   computeSeasonality,
   deseasonalizeCandles,
   type CandleInterval,
@@ -246,10 +247,12 @@ describe('conditional coverage with a strong diurnal profile', () => {
     let hitsLow = 0;
     let nLow = 0;
 
+    const predictor = createPredictor('1h');
+
     for (let i = window; i < candles.length - 1; i += 2) {
       const slice = candles.slice(i - window, i + 1);
       const price = slice[slice.length - 1].close;
-      const res = predict(slice, '1h' as CandleInterval, price, confidence);
+      const res = predictor.predict(slice, price, confidence);
       const actual = candles[i + 1].close;
       const hit = actual >= res.lowerPrice && actual <= res.upperPrice;
 

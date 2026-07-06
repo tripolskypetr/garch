@@ -3,6 +3,7 @@ export { Garch, calibrateGarch, type GarchOptions } from './garch.js';
 export { Egarch, calibrateEgarch, type EgarchOptions } from './egarch.js';
 export { HarRv, calibrateHarRv, type HarRvOptions } from './har.js';
 export { GjrGarch, calibrateGjrGarch, type GjrGarchOptions } from './gjr-garch.js';
+export { RealizedGarch, calibrateRealizedGarch, type RealizedGarchOptions } from './realized-garch.js';
 export { NoVaS, calibrateNoVaS, type NoVaSOptions } from './novas.js';
 
 // Utilities
@@ -36,9 +37,11 @@ export {
   predictRange,
   backtest,
   backtestStats,
+  createPredictor,
   computeSeasonality,
   deseasonalizeCandles,
   type Seasonality,
+  type WarmState,
   type BacktestStats,
   type CandleInterval,
   type PredictionResult,
@@ -53,6 +56,7 @@ export type {
   GarchParams,
   EgarchParams,
   GjrGarchParams,
+  RealizedGarchParams,
   HarRvParams,
   NoVaSParams,
   CalibrationResult,

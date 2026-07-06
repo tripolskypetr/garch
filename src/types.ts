@@ -75,6 +75,26 @@ export interface HarRvParams {
   annualizedVol: number;
   r2: number;
   df: number;
+  /** true when the regression runs on ln RV (betas live in log space). */
+  logSpec?: boolean;
+  /** Residual variance of the log-RV regression (lognormal bias correction). */
+  residualLogVar?: number;
+}
+
+export interface RealizedGarchParams {
+  omega: number;
+  beta: number;
+  gamma: number;
+  /** Measurement-equation intercept: ln RV_t = ξ + ln σ²_t + τ₁z + τ₂(z²−1) + u. */
+  xi: number;
+  tau1: number;
+  tau2: number;
+  /** Std of the measurement noise u — how much the model trusts RV. */
+  sigmaU: number;
+  persistence: number;
+  unconditionalVariance: number;
+  annualizedVol: number;
+  df: number;
 }
 
 export interface NoVaSParams {

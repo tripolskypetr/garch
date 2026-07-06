@@ -1,7 +1,15 @@
-import type { Candle, VolatilityForecast } from './types.js';
+import type {
+  Candle,
+  VolatilityForecast,
+  GarchParams,
+  EgarchParams,
+  GjrGarchParams,
+  RealizedGarchParams,
+} from './types.js';
 import { Garch } from './garch.js';
 import { Egarch } from './egarch.js';
 import { GjrGarch } from './gjr-garch.js';
+import { RealizedGarch } from './realized-garch.js';
 import { HarRv } from './har.js';
 import { NoVaS } from './novas.js';
 import {
@@ -74,16 +82,19 @@ export interface PredictionResult {
   /** Lower price band: `currentPrice · exp(-z·σ)`. Always positive. */
   lowerPrice: number;
   /** Top-weight member of the volatility model combination (selected by out-of-sample QLIKE). */
-  modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
+  modelType: 'garch' | 'egarch' | 'gjr-garch' | 'realized-garch' | 'har-rv' | 'novas';
   /** Student-t degrees of freedom profiled on scale-corrected residuals. */
   df: number;
   /**
-   * Corridor multiplier actually used: blend of the empirical |z| quantile
-   * of the standardized residuals and the model-implied quantile, weighted
-   * by how much data supports the requested tail. Reconstruct bands as
-   * `currentPrice · exp(±zScore · sigma)`.
+   * Average corridor multiplier, (zScoreUp + zScoreDown) / 2 — kept for
+   * backward compatibility. The bands themselves are asymmetric; use
+   * zScoreUp/zScoreDown to reconstruct them exactly.
    */
   zScore: number;
+  /** Upper-tail multiplier: `upperPrice = currentPrice · exp(+zScoreUp · sigma)`. */
+  zScoreUp: number;
+  /** Lower-tail multiplier: `lowerPrice = currentPrice · exp(−zScoreDown · sigma)`. */
+  zScoreDown: number;
   /** `true` when the model converged, persistence < 0.999, and Ljung-Box p-value ≥ 0.05. */
   reliable: boolean;
 }
@@ -248,7 +259,24 @@ type ModelType = PredictionResult['modelType'];
 type SimMember =
   | { kind: 'garch'; weight: number; omega: number; alpha: number; gamma: number; beta: number; v1: number }
   | { kind: 'egarch'; weight: number; omega: number; alpha: number; gamma: number; beta: number; logv1: number; eAbsZ: number; mbar: number }
+  | { kind: 'rgarch'; weight: number; omega: number; beta: number; gamma: number; xi: number; tau1: number; tau2: number; sigmaU: number; logv1: number }
   | { kind: 'flat'; weight: number; path: number[] };
+
+/**
+ * Cached calibration state threaded between rolling refits: previous
+ * optima become warm starts with a reduced multi-start budget, and the
+ * HAR spec search collapses to the previously selected configuration.
+ */
+export interface WarmState {
+  garch?: GarchParams;
+  garchForget?: GarchParams;
+  egarch?: EgarchParams;
+  gjr?: GjrGarchParams;
+  rgarch?: RealizedGarchParams;
+  harLags?: [number, number, number];
+  harLog?: boolean;
+  novasWeights?: number[];
+}
 
 interface MemberFit {
   modelType: ModelType;
@@ -272,8 +300,8 @@ interface FitResult {
   df: number;
   /** Structural warm-up of the combination (max over members). */
   warmup: number;
-  /** Sorted |r_t/σ_t| over the post-warm-up sample — the empirical calibration sample. */
-  absZ: number[];
+  /** Sorted signed r_t/σ_t over the post-warm-up sample — the empirical calibration sample (both tails). */
+  zSorted: number[];
   /** Kept combination members with recursions for horizon simulation. */
   simMembers: SimMember[];
 }
@@ -395,7 +423,10 @@ const OOS_TRAIN_RATIO = 0.75;
  * is decisive and average when candidates are within noise of each other
  * (forecast combination robustly beats picking one model on short samples).
  */
-function fitModel(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
+/** Forgetting factor of the adaptive GARCH candidate (half-life ≈ 69 bars). */
+const FORGET_LAMBDA = 0.99;
+
+function fitModel(candles: Candle[], periodsPerYear: number, steps: number, warm?: WarmState): FitResult {
   const returns = calculateReturns(candles);
   const rv = perCandleParkinson(candles, returns);
   const nReturns = returns.length;
@@ -407,33 +438,44 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
 
   const members: MemberFit[] = [];
 
-  // ── GARCH ──
-  try {
-    const trainFit = new Garch(trainCandles, { periodsPerYear }).fit();
-    const model = new Garch(candles, { periodsPerYear });
-    const oos = qlike(model.getVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
-    const fit = model.fit();
-    const fc = model.forecast(fit.params, steps);
-    members.push({
-      modelType: 'garch',
-      varianceSeries: model.getVarianceSeries(fit.params),
-      forecast: fc,
-      persistence: fit.params.persistence,
-      converged: fit.diagnostics.converged,
-      warmup: 0,
-      oosQlike: oos,
-      weight: 0,
-      sim: { kind: 'garch', weight: 0, omega: fit.params.omega, alpha: fit.params.alpha, gamma: 0, beta: fit.params.beta, v1: fc.variance[0] },
-    });
-  } catch { /* degenerate data — other members cover */ }
+  // ── GARCH (λ = 1) and adaptive GARCH (exponential forgetting) ──
+  // Two candidates from the same recursion: the forgetting variant tracks
+  // regime shifts, the plain one wins on stationary stretches — the OOS
+  // score decides which regime the data is in.
+  for (const forgetting of [1, FORGET_LAMBDA]) {
+    try {
+      const warmStart = forgetting === 1 ? warm?.garch : warm?.garchForget;
+      const trainFit = new Garch(trainCandles, { periodsPerYear }).fit({ forgetting, warmStart });
+      const model = new Garch(candles, { periodsPerYear });
+      const oos = qlike(model.getVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
+      const fit = model.fit({ forgetting, warmStart });
+      const fc = model.forecast(fit.params, steps);
+      if (warm) {
+        if (forgetting === 1) warm.garch = fit.params;
+        else warm.garchForget = fit.params;
+      }
+      members.push({
+        modelType: 'garch',
+        varianceSeries: model.getVarianceSeries(fit.params),
+        forecast: fc,
+        persistence: fit.params.persistence,
+        converged: fit.diagnostics.converged,
+        warmup: 0,
+        oosQlike: oos,
+        weight: 0,
+        sim: { kind: 'garch', weight: 0, omega: fit.params.omega, alpha: fit.params.alpha, gamma: 0, beta: fit.params.beta, v1: fc.variance[0] },
+      });
+    } catch { /* degenerate data — other members cover */ }
+  }
 
   // ── EGARCH ──
   try {
-    const trainFit = new Egarch(trainCandles, { periodsPerYear }).fit();
+    const trainFit = new Egarch(trainCandles, { periodsPerYear }).fit({ warmStart: warm?.egarch });
     const model = new Egarch(candles, { periodsPerYear });
     const oos = qlike(model.getVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
-    const fit = model.fit();
+    const fit = model.fit({ warmStart: warm?.egarch });
     const fc = model.forecast(fit.params, steps);
+    if (warm) warm.egarch = fit.params;
     members.push({
       modelType: 'egarch',
       varianceSeries: model.getVarianceSeries(fit.params),
@@ -459,11 +501,12 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
 
   // ── GJR-GARCH ──
   try {
-    const trainFit = new GjrGarch(trainCandles, { periodsPerYear }).fit();
+    const trainFit = new GjrGarch(trainCandles, { periodsPerYear }).fit({ warmStart: warm?.gjr });
     const model = new GjrGarch(candles, { periodsPerYear });
     const oos = qlike(model.getVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
-    const fit = model.fit();
+    const fit = model.fit({ warmStart: warm?.gjr });
     const fc = model.forecast(fit.params, steps);
+    if (warm) warm.gjr = fit.params;
     members.push({
       modelType: 'gjr-garch',
       varianceSeries: model.getVarianceSeries(fit.params),
@@ -477,30 +520,76 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
     });
   } catch { /* degenerate data */ }
 
-  // ── HAR-RV (lag triple chosen by the same OOS score) ──
+  // ── Realized GARCH ──
+  try {
+    const trainFit = new RealizedGarch(trainCandles, { periodsPerYear }).fit({ warmStart: warm?.rgarch });
+    const model = new RealizedGarch(candles, { periodsPerYear });
+    const oos = qlike(model.getVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
+    const fit = model.fit({ warmStart: warm?.rgarch });
+    const fc = model.forecast(fit.params, steps);
+    if (warm) warm.rgarch = fit.params;
+    members.push({
+      modelType: 'realized-garch',
+      varianceSeries: model.getVarianceSeries(fit.params),
+      forecast: fc,
+      persistence: fit.params.persistence,
+      converged: fit.diagnostics.converged,
+      warmup: 0,
+      oosQlike: oos,
+      weight: 0,
+      sim: {
+        kind: 'rgarch',
+        weight: 0,
+        omega: fit.params.omega,
+        beta: fit.params.beta,
+        gamma: fit.params.gamma,
+        xi: fit.params.xi,
+        tau1: fit.params.tau1,
+        tau2: fit.params.tau2,
+        sigmaU: fit.params.sigmaU,
+        logv1: Math.log(Math.max(fc.variance[0], 1e-300)),
+      },
+    });
+  } catch { /* degenerate data */ }
+
+  // ── HAR-RV (lag triple AND level/log spec chosen by the same OOS score) ──
   try {
     let bestLags: [number, number, number] | null = null;
+    let bestLog = false;
     let bestScore = Infinity;
-    for (const [shortLag, mediumLag, longLag] of selectHarLagCandidates(nTrain - 1, periodsPerYear)) {
-      try {
-        const trainFit = new HarRv(trainCandles, { periodsPerYear, shortLag, mediumLag, longLag }).fit();
-        if (trainFit.params.persistence >= 1 || trainFit.params.r2 < 0) continue;
-        const full = new HarRv(candles, { periodsPerYear, shortLag, mediumLag, longLag });
-        const score = qlike(full.getVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
-        if (score < bestScore) {
-          bestScore = score;
-          bestLags = [shortLag, mediumLag, longLag];
+    // Warm state pins the previously selected configuration — a spec search
+    // per rolling refit would mostly rediscover the same one
+    const lagCandidates: Array<[number, number, number]> = warm?.harLags
+      ? [warm.harLags]
+      : selectHarLagCandidates(nTrain - 1, periodsPerYear);
+    const specCandidates = warm?.harLags ? [warm.harLog ?? false] : [false, true];
+    for (const [shortLag, mediumLag, longLag] of lagCandidates) {
+      for (const logSpec of specCandidates) {
+        try {
+          const trainFit = new HarRv(trainCandles, { periodsPerYear, shortLag, mediumLag, longLag, logSpec }).fit();
+          if (trainFit.params.persistence >= 1 || trainFit.params.r2 < 0) continue;
+          const full = new HarRv(candles, { periodsPerYear, shortLag, mediumLag, longLag, logSpec });
+          const score = qlike(full.getVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
+          if (score < bestScore) {
+            bestScore = score;
+            bestLags = [shortLag, mediumLag, longLag];
+            bestLog = logSpec;
+          }
+        } catch {
+          continue;
         }
-      } catch {
-        continue;
       }
     }
     if (bestLags) {
       const [shortLag, mediumLag, longLag] = bestLags;
-      const model = new HarRv(candles, { periodsPerYear, shortLag, mediumLag, longLag });
+      const model = new HarRv(candles, { periodsPerYear, shortLag, mediumLag, longLag, logSpec: bestLog });
       const fit = model.fit();
       if (fit.params.persistence < 1 && fit.params.r2 >= 0) {
         const fc = model.forecast(fit.params, steps);
+        if (warm) {
+          warm.harLags = bestLags;
+          warm.harLog = bestLog;
+        }
         members.push({
           modelType: 'har-rv',
           varianceSeries: model.getVarianceSeries(fit.params),
@@ -519,13 +608,17 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
   // ── NoVaS ──
   try {
     const lags = adaptiveNovasLags(nReturns);
-    const trainFit = new NoVaS(trainCandles, { periodsPerYear, lags }).fit();
+    const warmWeights = warm?.novasWeights && warm.novasWeights.length === lags + 1
+      ? warm.novasWeights
+      : undefined;
+    const trainFit = new NoVaS(trainCandles, { periodsPerYear, lags }).fit({ warmWeights });
     if (trainFit.params.persistence < 1) {
       const model = new NoVaS(candles, { periodsPerYear, lags });
       const oos = qlike(model.getForecastVarianceSeries(trainFit.params).slice(evalStart), rv.slice(evalStart));
-      const fit = model.fit();
+      const fit = model.fit({ warmWeights });
       if (fit.params.persistence < 1) {
         const fc = model.forecast(fit.params, steps);
+        if (warm) warm.novasWeights = fit.params.weights;
         members.push({
           modelType: 'novas',
           varianceSeries: model.getForecastVarianceSeries(fit.params),
@@ -584,7 +677,7 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
     returns,
     df: 5,
     warmup: Math.max(...kept.map(m => m.warmup)),
-    absZ: [],
+    zSorted: [],
     simMembers: kept.map(m => ({ ...m.sim, weight: m.weight })),
   };
 
@@ -602,16 +695,18 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
   // the model half of the corridor quantile.
   best.df = profileStudentTDf(best.returns, best.varianceSeries);
 
-  // Empirical calibration sample: |z_t| of the corrected residuals
-  const absZ: number[] = [];
+  // Empirical calibration sample: signed z_t of the corrected residuals —
+  // the two tails are calibrated separately (return distributions are
+  // skewed; folding them into |z| hides that)
+  const zs: number[] = [];
   for (let i = warmup; i < nReturns; i++) {
     const v = best.varianceSeries[i];
     if (!(v > 0) || !isFinite(v)) continue;
-    const a = Math.abs(best.returns[i]) / Math.sqrt(v);
-    if (isFinite(a)) absZ.push(a);
+    const z = best.returns[i] / Math.sqrt(v);
+    if (isFinite(z)) zs.push(z);
   }
-  absZ.sort((a, b) => a - b);
-  best.absZ = absZ;
+  zs.sort((a, b) => a - b);
+  best.zSorted = zs;
 
   return best;
 }
@@ -664,29 +759,30 @@ function makeTSampler(df: number, rng: () => number): () => number {
 }
 
 /**
- * Model-implied |h-step standardized sum| quantile by simulation through
- * the fitted recursions (mixture across combination members).
+ * Model-implied h-step standardized-sum tail quantiles by simulation
+ * through the fitted recursions (mixture across combination members).
  *
  * Replaces the old zGauss + (zT − zGauss)/h interpolation: simulation
  * captures volatility feedback within the horizon (a shock raises later
  * σ's), the seasonal σ-path weighting, and the CLT decay of fat tails —
- * all of which the linear interpolation only approximated. Innovations are
- * standardized t(df) draws with the profiled df; the seed is fixed so
- * results are deterministic.
+ * all of which the linear interpolation only approximated. Sums are kept
+ * signed, so leverage (γ in GJR/EGARCH, τ₁ in Realized GARCH) produces
+ * genuinely asymmetric tails. Innovations are standardized t(df) draws
+ * with the profiled df; the seed is fixed so results are deterministic.
  */
-function simulateHorizonZ(
+function simulateHorizonTails(
   fit: FitResult,
   steps: number,
   confidence: number,
   factorPath?: number[],
-): number | null {
+): { up: number; down: number } | null {
   const members = fit.simMembers;
   if (!members || members.length === 0) return null;
   const f = factorPath && factorPath.length >= steps ? factorPath : new Array(steps).fill(1);
   const rng = mulberry32(0x5eed1e55);
   const drawZ = makeTSampler(fit.df, rng);
-  // Enough draws that the requested tail holds ≥ ~200 samples
-  const B = Math.min(20000, Math.max(4000, Math.ceil(200 / Math.max(1 - confidence, 1e-4))));
+  // Enough draws that each requested tail holds ≥ ~200 samples
+  const B = Math.min(40000, Math.max(4000, Math.ceil(400 / Math.max(1 - confidence, 1e-4))));
 
   const cum: number[] = [];
   let acc = 0;
@@ -721,6 +817,17 @@ function simulateHorizonZ(
         lv = m.omega + m.alpha * (Math.abs(z) + m.mbar - m.eAbsZ) + m.gamma * z + m.beta * lv;
         lv = Math.max(-50, Math.min(50, lv));
       }
+    } else if (m.kind === 'rgarch') {
+      let lv = m.logv1;
+      for (let j = 0; j < steps; j++) {
+        const v = Math.exp(lv) * f[j];
+        const z = drawZ();
+        num += Math.sqrt(v) * z;
+        den += v;
+        const lnRvSim = m.xi + lv + m.tau1 * z + m.tau2 * (z * z - 1) + m.sigmaU * simRandn(rng);
+        lv = m.omega + m.beta * lv + m.gamma * lnRvSim;
+        lv = Math.max(-50, Math.min(50, lv));
+      }
     } else {
       let v = m.v1;
       for (let j = 0; j < steps; j++) {
@@ -733,22 +840,25 @@ function simulateHorizonZ(
         if (!(v > 0) || !isFinite(v)) v = m.v1;
       }
     }
-    draws[b] = den > 0 ? Math.abs(num) / Math.sqrt(den) : 0;
+    draws[b] = den > 0 ? num / Math.sqrt(den) : 0;
   }
 
   draws.sort((a, b) => a - b);
-  const q = empiricalQuantile(draws, confidence);
-  return isFinite(q) && q > 0 ? q : null;
+  const pTail = (1 - confidence) / 2;
+  const up = empiricalQuantile(draws, 1 - pTail);
+  const down = -empiricalQuantile(draws, pTail);
+  if (!isFinite(up) || !isFinite(down) || up <= 0 || down <= 0) return null;
+  return { up, down };
 }
 
 /**
- * |h-step standardized sum| sample: |Σr| / √(Σσ²) over overlapping windows
- * of the post-warm-up region. This is the h-step analog of fit.absZ — it
- * absorbs whatever the single-period model misses about aggregation
- * (volatility autocorrelation, Jensen bias in EGARCH multi-step, fat tails
- * washing out by CLT).
+ * Signed h-step standardized-sum sample: Σr / √(Σσ²) over overlapping
+ * windows of the post-warm-up region. This is the h-step analog of
+ * fit.zSorted — it absorbs whatever the single-period model misses about
+ * aggregation (volatility autocorrelation, Jensen bias in EGARCH
+ * multi-step, fat tails washing out by CLT), separately per tail.
  */
-function horizonAbsZ(fit: FitResult, steps: number): number[] {
+function horizonZ(fit: FitResult, steps: number): number[] {
   const { returns, varianceSeries, warmup } = fit;
   const out: number[] = [];
 
@@ -766,7 +876,7 @@ function horizonAbsZ(fit: FitResult, steps: number): number[] {
       sumV += v;
     }
     if (!ok) continue;
-    const z = Math.abs(sumR) / Math.sqrt(sumV);
+    const z = sumR / Math.sqrt(sumV);
     if (isFinite(z)) out.push(z);
   }
 
@@ -775,41 +885,55 @@ function horizonAbsZ(fit: FitResult, steps: number): number[] {
 }
 
 /**
- * Corridor multiplier for a two-sided confidence level at horizon `steps`.
+ * Corridor multipliers (upper and lower, calibrated separately) for a
+ * two-sided confidence level at horizon `steps`.
  *
- * Instead of trusting the model quantile outright, the multiplier is
- * anchored to the data: the empirical quantile of the |standardized
- * (h-step) return| is used where the sample actually supports the requested
- * tail, and the model quantile takes over as the tail runs out of
- * observations. The blend weight is the expected number of tail exceedances
- * m = n_eff·(1−confidence) shrunk by a prior weight of 10 pseudo-
+ * Each tail carries (1−confidence)/2 mass. The empirical quantile of the
+ * signed standardized (h-step) return anchors each tail where the sample
+ * supports it, and the model quantile takes over as that tail runs out of
+ * observations. The blend weight per tail is the expected number of tail
+ * exceedances m = n_eff·(1−confidence)/2 shrunk by a prior of 5 pseudo-
  * observations; overlapping h-step windows are discounted by 1/steps.
  *
- * The model half is the fitted t(df) quantile at one step and the simulated
- * model-implied quantile (simulateHorizonZ) at longer horizons.
+ * The model half is the (symmetric) fitted t(df) quantile at one step and
+ * the simulated model-implied tails (simulateHorizonTails — asymmetric
+ * through the fitted leverage terms) at longer horizons.
  */
-function corridorZ(fit: FitResult, confidence: number, steps = 1, factorPath?: number[]): number {
+function corridorZBounds(
+  fit: FitResult,
+  confidence: number,
+  steps = 1,
+  factorPath?: number[],
+): { up: number; down: number } {
   const zGauss = probit(confidence);
   const zT = studentTProbit(confidence, fit.df);
-  let zModel: number;
+  let modelUp: number;
+  let modelDown: number;
   if (steps === 1) {
-    zModel = zT;
+    modelUp = zT;
+    modelDown = zT;
   } else {
-    const zSim = simulateHorizonZ(fit, steps, confidence, factorPath);
-    zModel = zSim ?? zGauss + (zT - zGauss) / steps;
+    const sim = simulateHorizonTails(fit, steps, confidence, factorPath);
+    const fallback = zGauss + (zT - zGauss) / steps;
+    modelUp = sim ? sim.up : fallback;
+    modelDown = sim ? sim.down : fallback;
   }
 
-  const absZ = steps === 1 ? fit.absZ : horizonAbsZ(fit, steps);
-  const n = absZ.length;
-  if (n < 50) return zModel;
+  const zs = steps === 1 ? fit.zSorted : horizonZ(fit, steps);
+  const n = zs.length;
+  if (n < 50) return { up: modelUp, down: modelDown };
 
-  const zEmpirical = empiricalQuantile(absZ, confidence);
-  if (!isFinite(zEmpirical)) return zModel;
+  const pTail = (1 - confidence) / 2;
+  const empUp = empiricalQuantile(zs, 1 - pTail);
+  const empDown = -empiricalQuantile(zs, pTail);
 
   const effN = n / steps; // overlap discount
-  const tailCount = effN * (1 - confidence);
-  const w = tailCount / (tailCount + 10);
-  return w * zEmpirical + (1 - w) * zModel;
+  const tailCount = effN * pTail;
+  const w = tailCount / (tailCount + 5);
+
+  const up = isFinite(empUp) && empUp > 0 ? w * empUp + (1 - w) * modelUp : modelUp;
+  const down = isFinite(empDown) && empDown > 0 ? w * empDown + (1 - w) * modelDown : modelDown;
+  return { up, down };
 }
 
 function checkReliable(fit: FitResult): boolean {
@@ -842,6 +966,7 @@ function runPredict(
   steps: number,
   currentPrice: number,
   confidence: number,
+  warm?: WarmState,
 ): PredictionResult {
   const periodsPerYear = INTERVALS_PER_YEAR[interval];
   const nReturns = candles.length - 1;
@@ -849,7 +974,7 @@ function runPredict(
   // Deseasonalize, fit in flat-profile space, reseasonalize the forecast
   const season = computeSeasonality(candles, interval);
   const fitCandles = season ? deseasonalizeCandles(candles, season) : candles;
-  const fit = fitModel(fitCandles, periodsPerYear, steps);
+  const fit = fitModel(fitCandles, periodsPerYear, steps, warm);
 
   const factorPath: number[] = new Array(steps).fill(1);
   if (season) {
@@ -864,24 +989,55 @@ function runPredict(
     };
   }
 
-  const z = corridorZ(fit, confidence, steps, factorPath);
+  const { up: zUp, down: zDown } = corridorZBounds(fit, confidence, steps, factorPath);
 
   const cumulativeVariance = fit.forecast.variance.reduce((sum, v) => sum + v, 0);
   const sigma = Math.sqrt(cumulativeVariance);
-  const upperPrice = currentPrice * Math.exp(z * sigma);
-  const lowerPrice = currentPrice * Math.exp(-z * sigma);
+  const upperPrice = currentPrice * Math.exp(zUp * sigma);
+  const lowerPrice = currentPrice * Math.exp(-zDown * sigma);
 
   return {
     modelType: fit.modelType,
     currentPrice,
     sigma,
     df: fit.df,
-    zScore: z,
+    zScore: (zUp + zDown) / 2,
+    zScoreUp: zUp,
+    zScoreDown: zDown,
     move: upperPrice - currentPrice,
     movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,
     lowerPrice,
     reliable: checkReliable(fit),
+  };
+}
+
+/**
+ * Stateful predictor for rolling use (bots, backtests): each subsequent
+ * predict/predictRange warm-starts every optimizer from the previous
+ * window's optimum with a reduced multi-start budget — same math, a
+ * fraction of the cost. State is per-instrument: do not share one
+ * predictor across symbols.
+ */
+export function createPredictor(interval: CandleInterval): {
+  predict: (candles: Candle[], currentPrice?: number | null, confidence?: number) => PredictionResult;
+  predictRange: (candles: Candle[], steps: number, currentPrice?: number | null, confidence?: number) => PredictionResult;
+} {
+  const warm: WarmState = {};
+  return {
+    predict(candles, currentPrice?, confidence = 0.6827) {
+      assertMinCandles(candles, interval);
+      const price = currentPrice || candles[candles.length - 1].close;
+      return runPredict(candles, interval, 1, price, confidence, warm);
+    },
+    predictRange(candles, steps, currentPrice?, confidence = 0.6827) {
+      assertMinCandles(candles, interval);
+      if (!Number.isFinite(steps) || steps < 1) {
+        throw new Error(`steps must be a number >= 1, got ${steps}`);
+      }
+      const price = currentPrice || candles[candles.length - 1].close;
+      return runPredict(candles, interval, Math.floor(steps), price, confidence, warm);
+    },
   };
 }
 
@@ -987,9 +1143,14 @@ export function backtestStats(
   let hits = 0;
   let total = 0;
 
+  // Rolling refits share warm-start state — same estimates as cold fits up
+  // to optimizer tolerance, at a fraction of the multi-start cost
+  const warm: WarmState = {};
+
   for (let i = window; i < candles.length - 1; i += stride) {
     const slice = candles.slice(i - window, i + 1);
-    const predicted = predict(slice, interval, slice[slice.length - 1].close, confidence);
+    const price = slice[slice.length - 1].close;
+    const predicted = runPredict(slice, interval, 1, price, confidence, warm);
     const actual = candles[i + 1].close;
 
     if (actual >= predicted.lowerPrice && actual <= predicted.upperPrice) {

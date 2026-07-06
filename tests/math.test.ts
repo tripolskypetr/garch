@@ -697,7 +697,7 @@ describe('predict egarch branch', () => {
     }
     const result = predict(candles, '4h');
     // QLIKE-based selection may pick any model; verify output is valid
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(result.sigma).toBeGreaterThan(0);
   });
 });

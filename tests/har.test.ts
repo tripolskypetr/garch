@@ -385,7 +385,7 @@ describe('HAR-RV integration with predict', () => {
   it('predict should accept har-rv as modelType', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(result.sigma).toBeGreaterThan(0);
     expect(Number.isFinite(result.sigma)).toBe(true);
   });
@@ -410,10 +410,11 @@ describe('HAR-RV integration with predict', () => {
     expect(result.lowerPrice).toBeLessThan(result.currentPrice);
   });
 
-  it('move = currentPrice * (exp(z*sigma) - 1)', () => {
+  it('move = currentPrice * (exp(zUp*sigma) - 1)', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(result.zScore * result.sigma) - 1), 10);
+    // Corridor is asymmetric: move is defined by the upper-tail multiplier
+    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(result.zScoreUp * result.sigma) - 1), 10);
   });
 
   it('predictRange cumulative sigma > single-step sigma', () => {
@@ -435,7 +436,7 @@ describe('HAR-RV integration with predict', () => {
       const result = predict(candles, interval as any);
       expect(result.sigma).toBeGreaterThan(0);
       expect(Number.isFinite(result.sigma)).toBe(true);
-      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     }
   });
 
@@ -461,7 +462,7 @@ describe('HAR-RV integration with predict', () => {
     const candles = makeCandles(300, 42);
     const result = predict(candles, '4h', 50000);
     expect(result.currentPrice).toBe(50000);
-    expect(result.move).toBeCloseTo(50000 * (Math.exp(result.zScore * result.sigma) - 1), 5);
+    expect(result.move).toBeCloseTo(50000 * (Math.exp(result.zScoreUp * result.sigma) - 1), 5);
   });
 });
 
@@ -972,7 +973,7 @@ describe('HAR-RV model selection in predict', () => {
   it('predict returns valid result for HAR-structured data', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(Number.isFinite(result.sigma)).toBe(true);
     expect(result.sigma).toBeGreaterThanOrEqual(0);
   });
@@ -984,7 +985,7 @@ describe('HAR-RV model selection in predict', () => {
       expect(Number.isFinite(result.sigma)).toBe(true);
       expect(Number.isFinite(result.move)).toBe(true);
       expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
-      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     }
   });
 
@@ -1142,7 +1143,7 @@ describe('HAR-RV predict.ts code paths', () => {
     }
     const result = predict(candles, '8h');
     // Should not crash — GARCH family is the fallback
-    expect(['garch', 'egarch', 'gjr-garch', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'novas']).toContain(result.modelType);
     expect(Number.isFinite(result.sigma)).toBe(true);
   });
 

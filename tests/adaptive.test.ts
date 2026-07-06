@@ -215,11 +215,13 @@ describe('corridor zScore', () => {
     expect(p99.zScore).toBeGreaterThan(p95.zScore);
   }, 600_000);
 
-  it('bands reconstruct exactly from zScore and sigma', () => {
+  it('bands reconstruct exactly from zScoreUp/zScoreDown and sigma', () => {
     const candles = makeCandles(300, 321);
     const res = predict(candles, '4h' as CandleInterval, null, 0.9);
-    expect(res.upperPrice).toBeCloseTo(res.currentPrice * Math.exp(res.zScore * res.sigma), 10);
-    expect(res.lowerPrice).toBeCloseTo(res.currentPrice * Math.exp(-res.zScore * res.sigma), 10);
+    // Corridor is asymmetric: each tail carries its own multiplier
+    expect(res.upperPrice).toBeCloseTo(res.currentPrice * Math.exp(res.zScoreUp * res.sigma), 10);
+    expect(res.lowerPrice).toBeCloseTo(res.currentPrice * Math.exp(-res.zScoreDown * res.sigma), 10);
+    expect(res.zScore).toBeCloseTo((res.zScoreUp + res.zScoreDown) / 2, 12);
   }, 600_000);
 
   it('on Gaussian data the 68% multiplier lands near 1.0 (not the fat-tail t value)', () => {

@@ -1136,7 +1136,7 @@ describe('GJR-GARCH scale invariance', () => {
 describe('GJR-GARCH integration with predict pipeline', () => {
   it('predict() can select gjr-garch model type', () => {
     // Try several seeds — gjr-garch should be selectable
-    const validTypes = ['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas'];
+    const validTypes = ['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas'];
     for (let seed = 1; seed <= 20; seed++) {
       const candles = makeCandles(200, seed);
       const result = predict(candles, '4h');

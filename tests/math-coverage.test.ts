@@ -1353,7 +1353,7 @@ describe('GJR-GARCH', () => {
 
     const result = predict(candles, '4h');
     // gjr-garch is now a valid model type in the union
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
   });
 
   it('deterministic across runs with same seed', () => {

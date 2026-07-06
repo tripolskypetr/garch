@@ -16,6 +16,13 @@ export interface HarRvOptions {
   shortLag?: number;
   mediumLag?: number;
   longLag?: number;
+  /**
+   * Regress ln RV instead of RV levels (log-HAR, Corsi). Positivity comes
+   * for free (no 1e-20 clamps on negative predictions), residuals are far
+   * closer to homoskedastic, and single RV prints stop dominating the OLS.
+   * Predictions are bias-corrected: E[RV] = exp(ŷ + σ²_ε/2).
+   */
+  logSpec?: boolean;
 }
 
 const DEFAULT_SHORT = 1;
@@ -152,12 +159,15 @@ export class HarRv {
   private shortLag: number;
   private mediumLag: number;
   private longLag: number;
+  private logSpec: boolean;
+  private lnRv: number[] | null = null;
 
   constructor(data: Candle[] | number[], options: HarRvOptions = {}) {
     this.periodsPerYear = options.periodsPerYear ?? 252;
     this.shortLag = options.shortLag ?? DEFAULT_SHORT;
     this.mediumLag = options.mediumLag ?? DEFAULT_MEDIUM;
     this.longLag = options.longLag ?? DEFAULT_LONG;
+    this.logSpec = options.logSpec ?? false;
 
     const minRequired = this.longLag + 30;
 
@@ -176,6 +186,20 @@ export class HarRv {
       // Parkinson (1980) per-candle RV: (1/(4·ln2))·(ln(H/L))²
       this.rv = perCandleParkinson(candles, this.returns);
     }
+
+    if (this.logSpec) {
+      // ln RV with a floor at half the smallest positive observation: the
+      // log regression must not see −Infinity from a flat candle
+      let minPos = Infinity;
+      for (const v of this.rv) {
+        if (v > 0 && v < minPos) minPos = v;
+      }
+      if (!isFinite(minPos)) {
+        throw new Error('log-HAR needs at least one positive realized-variance observation');
+      }
+      const floor = minPos * 0.5;
+      this.lnRv = this.rv.map(v => Math.log(Math.max(v, floor)));
+    }
   }
 
   /**
@@ -185,14 +209,13 @@ export class HarRv {
     const { rv, shortLag, mediumLag, longLag } = this;
     const n = rv.length;
 
-    // Regress in normalized units (RV scaled to unit mean): OLS slopes and
-    // R² are scale-free, and the singular-matrix pivot threshold in the
-    // solver keeps detecting genuine collinearity instead of tripping on
-    // low-volatility series where X'X entries are ~1e-24. β₀ is mapped
-    // back to the data scale below.
+    // Level spec: regress in normalized units (RV scaled to unit mean) so
+    // the singular-matrix pivot threshold keeps detecting genuine
+    // collinearity instead of tripping on low-volatility series.
+    // Log spec: ln RV is already O(10) and shift-equivariant — no scaling.
     const meanRv = rv.reduce((s, v) => s + v, 0) / n;
     const s2 = meanRv > 0 ? 1 / meanRv : 1;
-    const rvS = rv.map(v => v * s2);
+    const series = this.logSpec ? this.lnRv! : rv.map(v => v * s2);
 
     // Build regression data
     // Usable range: t = longLag-1 .. n-2 (need longLag history, and rv[t+1] as target)
@@ -204,26 +227,36 @@ export class HarRv {
     const y: number[] = [];
 
     for (let t = startIdx; t <= endIdx; t++) {
-      const rvShort = rollingMean(rvS, t, shortLag);
-      const rvMedium = rollingMean(rvS, t, mediumLag);
-      const rvLong = rollingMean(rvS, t, longLag);
+      const rvShort = rollingMean(series, t, shortLag);
+      const rvMedium = rollingMean(series, t, mediumLag);
+      const rvLong = rollingMean(series, t, longLag);
       X.push([1, rvShort, rvMedium, rvLong]);
-      y.push(rvS[t + 1]);
+      y.push(series[t + 1]);
     }
 
     const result = ols(X, y);
-    const [beta0Scaled, betaShort, betaMedium, betaLong] = result.beta;
-    const beta0 = beta0Scaled / s2;
+    const [beta0Raw, betaShort, betaMedium, betaLong] = result.beta;
+    // Level spec: intercept back to the data scale. Log spec: intercept is
+    // already in data units (log scaling is a shift the OLS absorbed).
+    const beta0 = this.logSpec ? beta0Raw : beta0Raw / s2;
+    const residualLogVar = this.logSpec ? result.rss / nObs : undefined;
 
     const persistence = betaShort + betaMedium + betaLong;
-    const unconditionalVariance = persistence < 1 && persistence > -1
-      ? Math.max(beta0 / (1 - persistence), 1e-20)
-      : sampleVariance(this.returns);
+    let unconditionalVariance: number;
+    if (persistence < 1 && persistence > -1) {
+      unconditionalVariance = this.logSpec
+        ? Math.exp(Math.max(-720, Math.min(50, beta0 / (1 - persistence) + residualLogVar! / 2)))
+        : Math.max(beta0 / (1 - persistence), 1e-20);
+    } else {
+      unconditionalVariance = sampleVariance(this.returns);
+    }
     const annualizedVol = Math.sqrt(Math.abs(unconditionalVariance) * this.periodsPerYear) * 100;
 
     // Student-t log-likelihood on returns using HAR-RV fitted variances
-    // (data-scale β vector — result.beta carries the normalized intercept)
-    const varianceSeries = this.getVarianceSeriesInternal([beta0, betaShort, betaMedium, betaLong]);
+    const varianceSeries = this.getVarianceSeriesInternal(
+      [beta0, betaShort, betaMedium, betaLong],
+      residualLogVar ?? 0,
+    );
     const df = profileStudentTDf(this.returns, varianceSeries);
     const ll = -studentTNegLL(this.returns, varianceSeries, df);
 
@@ -240,6 +273,7 @@ export class HarRv {
         annualizedVol,
         r2: result.r2,
         df,
+        ...(this.logSpec ? { logSpec: true, residualLogVar } : {}),
       },
       diagnostics: {
         logLikelihood: ll,
@@ -253,10 +287,12 @@ export class HarRv {
 
   /**
    * Internal: compute variance series from beta vector.
+   * For the log spec the prediction is E[RV] = exp(ŷ + σ²_ε/2).
    */
-  private getVarianceSeriesInternal(beta: number[]): number[] {
-    const { rv, shortLag, mediumLag, longLag } = this;
-    const n = rv.length;
+  private getVarianceSeriesInternal(beta: number[], residualLogVar = 0): number[] {
+    const { shortLag, mediumLag, longLag } = this;
+    const source = this.logSpec ? this.lnRv! : this.rv;
+    const n = source.length;
     const fallback = sampleVariance(this.returns);
     const series: number[] = [];
 
@@ -267,11 +303,15 @@ export class HarRv {
       } else {
         // HAR prediction for rv[i] based on rv[..i-1]
         const t = i - 1;
-        const rvS = rollingMean(rv, t, shortLag);
-        const rvM = rollingMean(rv, t, mediumLag);
-        const rvL = rollingMean(rv, t, longLag);
+        const rvS = rollingMean(source, t, shortLag);
+        const rvM = rollingMean(source, t, mediumLag);
+        const rvL = rollingMean(source, t, longLag);
         const predicted = beta[0] + beta[1] * rvS + beta[2] * rvM + beta[3] * rvL;
-        series.push(Math.max(predicted, 1e-20));
+        series.push(
+          this.logSpec
+            ? Math.exp(Math.max(-720, Math.min(50, predicted + residualLogVar / 2)))
+            : Math.max(predicted, 1e-20),
+        );
       }
     }
 
@@ -283,21 +323,23 @@ export class HarRv {
    */
   getVarianceSeries(params: HarRvParams): number[] {
     const beta = [params.beta0, params.betaShort, params.betaMedium, params.betaLong];
-    return this.getVarianceSeriesInternal(beta);
+    return this.getVarianceSeriesInternal(beta, params.residualLogVar ?? 0);
   }
 
   /**
    * Forecast variance forward.
    *
    * Uses iterative substitution: each forecast step feeds back
-   * into the rolling RV components for subsequent steps.
+   * into the rolling RV components for subsequent steps (point forecasts
+   * of ln RV for the log spec, bias-corrected on output).
    */
   forecast(params: HarRvParams, steps: number = 1): VolatilityForecast {
-    const { rv, shortLag, mediumLag, longLag } = this;
+    const { shortLag, mediumLag, longLag } = this;
     const { beta0, betaShort, betaMedium, betaLong } = params;
+    const residualLogVar = params.residualLogVar ?? 0;
 
-    // Working copy of recent rv values + forecasts appended
-    const history = rv.slice();
+    // Working copy of recent (ln) rv values + forecasts appended
+    const history = this.logSpec ? this.lnRv!.slice() : this.rv.slice();
     const variance: number[] = [];
 
     for (let h = 0; h < steps; h++) {
@@ -306,9 +348,14 @@ export class HarRv {
       const rvM = rollingMean(history, t, mediumLag);
       const rvL = rollingMean(history, t, longLag);
       const predicted = beta0 + betaShort * rvS + betaMedium * rvM + betaLong * rvL;
-      const v = Math.max(predicted, 1e-20);
-      variance.push(v);
-      history.push(v);
+      if (this.logSpec) {
+        variance.push(Math.exp(Math.max(-720, Math.min(50, predicted + residualLogVar / 2))));
+        history.push(predicted); // E[ln RV] feeds the recursion
+      } else {
+        const v = Math.max(predicted, 1e-20);
+        variance.push(v);
+        history.push(v);
+      }
     }
 
     return {

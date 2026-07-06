@@ -436,7 +436,7 @@ describe('fitModel Parkinson RV verification', () => {
     expect(result.sigma).toBeGreaterThan(0);
     expect(Number.isFinite(result.sigma)).toBe(true);
     expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
   });
 
   it('predict() Candle[] vs number[]-derived candles — sigma differs', () => {
@@ -985,11 +985,11 @@ describe('predict fallback when NoVaS fails', () => {
     const result = predict(candles, '4h');
     expect(result).toBeDefined();
     expect(Number.isFinite(result.sigma)).toBe(true);
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
   });
 
   it('predict always returns a valid modelType across 20 seeds', () => {
-    const validTypes = ['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas'];
+    const validTypes = ['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas'];
     for (let seed = 1; seed <= 20; seed++) {
       const candles = makeCandles(200, seed);
       const result = predict(candles, '4h');
@@ -1019,14 +1019,15 @@ describe('predict fallback when NoVaS fails', () => {
     const result = predict(candles, '4h');
 
     // The result must come from one of the four models
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     // Forecast corridor must be well-formed
     expect(result.move).toBeGreaterThanOrEqual(0);
     expect(result.upperPrice).toBeCloseTo(result.currentPrice + result.move, 8);
-    // log-normal bands are asymmetric: ln(upper/P) = -ln(lower/P)
+    // log-normal bands with per-tail multipliers
     const logUp = Math.log(result.upperPrice / result.currentPrice);
     const logDown = Math.log(result.lowerPrice / result.currentPrice);
-    expect(logUp).toBeCloseTo(-logDown, 8);
+    expect(logUp).toBeCloseTo(result.zScoreUp * result.sigma, 8);
+    expect(logDown).toBeCloseTo(-result.zScoreDown * result.sigma, 8);
   });
 });
 
@@ -1389,7 +1390,7 @@ describe('ground-truth: DGP tailored to each model', () => {
   });
 
   it('GARCH DGP: GARCH family wins across majority of seeds', () => {
-    const garchTypes = ['garch', 'egarch', 'gjr-garch'];
+    const garchTypes = ['garch', 'egarch', 'gjr-garch', 'realized-garch'];
     let garchWins = 0;
     for (let seed = 1; seed <= 20; seed++) {
       const { candles } = makeGarchDGP(500, seed);
@@ -1461,7 +1462,7 @@ describe('ground-truth: DGP tailored to each model', () => {
     for (let seed = 1; seed <= 20; seed++) {
       const { candles } = makeHarDGP(500, seed);
       const result = predict(candles, '15m');
-      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
       expect(result.sigma).toBeGreaterThan(0);
       if (result.modelType === 'har-rv') harWins++;
     }
@@ -1486,7 +1487,7 @@ describe('ground-truth: DGP tailored to each model', () => {
     for (let seed = 1; seed <= 20; seed++) {
       const { candles } = makeNovasDGP(500, seed);
       const result = predict(candles, '15m');
-      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
       expect(result.sigma).toBeGreaterThan(0);
       expect(Number.isFinite(result.sigma)).toBe(true);
       if (result.modelType === 'novas') novasWins++;
@@ -1512,7 +1513,7 @@ describe('ground-truth: DGP tailored to each model', () => {
       expect(result.sigma).toBeGreaterThan(0);
       expect(Number.isFinite(result.sigma)).toBe(true);
       expect(result.upperPrice).toBeGreaterThan(result.lowerPrice);
-      expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+      expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     }
   });
 

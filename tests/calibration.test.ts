@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { studentTCdf, studentTProbit, probit } from '../src/utils.js';
-import { predict, predictRange, backtestStats, type CandleInterval } from '../src/predict.js';
+import { predict, predictRange, backtestStats, createPredictor, type CandleInterval } from '../src/predict.js';
 import type { Candle } from '../src/types.js';
 
 // ── Deterministic RNG ──────────────────────────────────────────
@@ -140,18 +140,21 @@ describe('walk-forward corridor calibration (t(5) + leverage DGP)', () => {
     let hits99 = 0;
     let total = 0;
 
+    // Warm-started rolling refits — the same path backtestStats uses
+    const pred68 = createPredictor('1h');
+    const pred99 = createPredictor('1h');
+
     for (let i = window; i < candles.length - 1; i++) {
       const slice = candles.slice(i - window, i + 1);
       const price = slice[slice.length - 1].close;
-      const res68 = predict(slice, '1h' as CandleInterval, price, 0.6827);
+      const res68 = pred68.predict(slice, price, 0.6827);
       const actual = candles[i + 1].close;
       if (actual >= res68.lowerPrice && actual <= res68.upperPrice) hits68++;
 
-      // 99% band from the same fit: rescale by zScore ratio is not exact
-      // for the blended quantile, so reconstruct via a second predict only
-      // every 4th step to bound runtime.
+      // 99% band from a second warm predictor only every 4th step to
+      // bound runtime.
       if (i % 4 === 0) {
-        const res99 = predict(slice, '1h' as CandleInterval, price, 0.99);
+        const res99 = pred99.predict(slice, price, 0.99);
         if (actual >= res99.lowerPrice && actual <= res99.upperPrice) hits99++;
       }
       total++;
@@ -183,10 +186,12 @@ describe('walk-forward predictRange calibration (10-step horizon)', () => {
     let hits = 0;
     let total = 0;
 
+    const predictor = createPredictor('1h');
+
     for (let i = window; i < candles.length - steps; i += 4) {
       const slice = candles.slice(i - window, i + 1);
       const price = slice[slice.length - 1].close;
-      const res = predictRange(slice, '1h' as CandleInterval, steps, price, 0.6827);
+      const res = predictor.predictRange(slice, steps, price, 0.6827);
       const actual = candles[i + steps].close;
       if (actual >= res.lowerPrice && actual <= res.upperPrice) hits++;
       total++;
@@ -213,10 +218,12 @@ describe('corridor survives RV/return scale mismatch', () => {
     let hits = 0;
     let total = 0;
 
+    const predictor = createPredictor('1h');
+
     for (let i = window; i < candles.length - 1; i += 2) {
       const slice = candles.slice(i - window, i + 1);
       const price = slice[slice.length - 1].close;
-      const res = predict(slice, '1h' as CandleInterval, price, 0.6827);
+      const res = predictor.predict(slice, price, 0.6827);
       const actual = candles[i + 1].close;
       if (actual >= res.lowerPrice && actual <= res.upperPrice) hits++;
       total++;

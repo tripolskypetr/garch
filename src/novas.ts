@@ -73,7 +73,9 @@ export class NoVaS {
    * Stage 1: D² minimization (normality of W_t)
    * Stage 2: OLS rescaling of D²-variance (forecast-optimal)
    */
-  fit(options: { maxIter?: number; tol?: number } = {}): CalibrationResult<NoVaSParams> {
+  fit(
+    options: { maxIter?: number; tol?: number; warmWeights?: number[] } = {},
+  ): CalibrationResult<NoVaSParams> {
     const { maxIter = 2000, tol = 1e-8 } = options;
     const returns = this.returns;
     const n = returns.length;
@@ -159,6 +161,14 @@ export class NoVaS {
       x0.push(0.9 * (1 - lambda) * Math.pow(lambda, j - 1));
     }
 
+    // Warm start (previous window's data-scale weights): the screening
+    // cloud exists to discover the lag structure, which a warm start
+    // already carries — skip it and run a reduced multi-start instead.
+    const warm = options.warmWeights;
+    const warmScaled = warm && warm.length === p + 1 && warm.every(v => isFinite(v))
+      ? [warm[0] * s2, ...warm.slice(1)]
+      : null;
+
     // Screening: the multi-start perturbation scales x0 multiplicatively and
     // preserves its exponential-decay shape, so far-lag weight structures are
     // unreachable from x0 alone (measured: 5.6× worse D² on two-spike ARCH
@@ -166,7 +176,7 @@ export class NoVaS {
     // low-discrepancy cloud of sparse weight shapes and hand the best few to
     // Nelder-Mead as explicit extra starts.
     const screened: Array<{ d2: number; w: number[] }> = [];
-    {
+    if (!warmScaled) {
       // Kronecker sequence: one irrational stride per dimension
       const strides: number[] = [];
       for (let i = 0, prime = 2; i <= p + 1; prime++) {
@@ -195,7 +205,7 @@ export class NoVaS {
       }
       screened.sort((a, b) => a.d2 - b.d2);
     }
-    const extraStarts = screened.slice(0, 3).map(c => c.w);
+    const extraStarts = warmScaled ? [] : screened.slice(0, 3).map(c => c.w);
 
     // Stage-2 OLS (RV_t ~ β₀ + β₁·σ²_t) for a given weight vector.
     // σ²_t is built from r2[t-1..t-p], so it already IS the one-step-ahead
@@ -239,7 +249,7 @@ export class NoVaS {
     // RV forecaster: normality identifies the set, prediction picks the point.
     const D2_NOISE = 0.05;
     const candidateRuns = [
-      nelderMeadMultiStart(objectiveD2, x0, { maxIter, tol, restarts: 6 }),
+      nelderMeadMultiStart(objectiveD2, warmScaled ?? x0, { maxIter, tol, restarts: warmScaled ? 1 : 6 }),
       ...extraStarts.map(s => nelderMead(objectiveD2, s, { maxIter, tol })),
     ];
     const bestD2 = Math.min(...candidateRuns.map(r => r.fx));

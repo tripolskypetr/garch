@@ -65,10 +65,20 @@ export class Egarch {
   /**
    * Calibrate EGARCH(1,1) parameters using Maximum Likelihood Estimation
    */
-  fit(options: { maxIter?: number; tol?: number } = {}): CalibrationResult<EgarchParams> {
-    const { maxIter = 1000, tol = 1e-8 } = options;
+  fit(
+    options: { maxIter?: number; tol?: number; forgetting?: number; warmStart?: EgarchParams } = {},
+  ): CalibrationResult<EgarchParams> {
+    const { maxIter = 1000, tol = 1e-8, forgetting = 1 } = options;
     const n = this.returns.length;
     const initLogVarOrig = Math.log(this.initialVariance);
+
+    // Exponential forgetting: observation t contributes with weight
+    // λ^(n−1−t) (newest = 1); λ = 1 disables.
+    const weights = new Array(n).fill(1);
+    if (forgetting < 1) {
+      for (let t = 0; t < n; t++) weights[t] = Math.pow(forgetting, n - 1 - t);
+    }
+    const wTotal = weights.reduce((a, b) => a + b, 0);
 
     // Calibrate in normalized space: returns are scaled to unit initial
     // variance, so the likelihood floors, the ±50 log-variance clamp, and
@@ -104,7 +114,7 @@ export class Egarch {
       const eAbsZ = expectedAbsStudentT(df);
       const halfDfPlus1 = (df + 1) / 2;
       const dfMinus2 = df - 2;
-      const constant = n * (logGamma(halfDfPlus1) - logGamma(df / 2) - 0.5 * Math.log(Math.PI * dfMinus2));
+      const constant = wTotal * (logGamma(halfDfPlus1) - logGamma(df / 2) - 0.5 * Math.log(Math.PI * dfMinus2));
 
       let logVariance = initLogVar;
       let variance = Math.exp(logVariance);
@@ -133,7 +143,7 @@ export class Egarch {
         if (variance <= varFloor || !isFinite(variance)) return 1e10;
 
         // Student-t log-likelihood
-        ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));
+        ll += weights[i] * (-0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance)));
       }
 
       return -(ll + constant) + prior;
@@ -149,10 +159,21 @@ export class Egarch {
     const gamma0 = -0.05; // Negative for typical leverage effect
     const df0 = 5;
 
+    // Warm start (previous window's optimum) replaces the cold seed with a
+    // reduced restart budget. The hard wall on the implied unconditional
+    // level moves with the sample variance between windows, so an
+    // out-of-wall warm seed falls back to the cold start.
+    const wp = options.warmStart;
+    let warmX0: number[] | null = null;
+    if (wp && isFinite(wp.omega) && isFinite(wp.beta) && Math.abs(wp.beta) < 1) {
+      const cand = [wp.omega - (1 - wp.beta) * initLogVarOrig, wp.alpha, wp.gamma, wp.beta, wp.df];
+      if (Math.abs(cand[0] / (1 - wp.beta)) <= Math.log(1e4)) warmX0 = cand;
+    }
+
     const result = nelderMeadMultiStart(
       negLogLikelihood,
-      [omega0, alpha0, gamma0, beta0, df0],
-      { maxIter, tol, restarts: 4 }
+      warmX0 ?? [omega0, alpha0, gamma0, beta0, df0],
+      { maxIter, tol, restarts: warmX0 ? 1 : 4 }
     );
 
     // Map back to the data scale: ln σ²_orig = ln σ²_scaled + ln σ̂²_orig,

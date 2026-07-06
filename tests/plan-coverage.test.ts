@@ -322,7 +322,7 @@ describe('predict output field consistency', () => {
 
     expect(typeof result.reliable).toBe('boolean');
     expect(typeof result.modelType).toBe('string');
-    expect(['garch', 'egarch', 'gjr-garch', 'har-rv', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'realized-garch', 'har-rv', 'novas']).toContain(result.modelType);
     expect(result.sigma).toBeGreaterThanOrEqual(0);
     expect(Number.isFinite(result.sigma)).toBe(true);
     expect(Number.isFinite(result.move)).toBe(true);
@@ -337,24 +337,28 @@ describe('predict output field consistency', () => {
     expect(result.upperPrice).toBeCloseTo(result.currentPrice + result.move, 10);
   });
 
-  it('lowerPrice = currentPrice * exp(-z*sigma)', () => {
+  it('lowerPrice = currentPrice * exp(-zDown*sigma)', () => {
     const candles = makeCandles(200, 303);
     const result = predict(candles, '4h');
-    expect(result.lowerPrice).toBeCloseTo(result.currentPrice * Math.exp(-result.zScore * result.sigma), 10);
+    expect(result.lowerPrice).toBeCloseTo(result.currentPrice * Math.exp(-result.zScoreDown * result.sigma), 10);
   });
 
-  it('move = currentPrice * (exp(z*sigma) - 1)', () => {
+  it('move = currentPrice * (exp(zUp*sigma) - 1)', () => {
     const candles = makeCandles(200, 404);
     const result = predict(candles, '4h');
-    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(result.zScore * result.sigma) - 1), 10);
+    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(result.zScoreUp * result.sigma) - 1), 10);
   });
 
-  it('log-normal corridor: ln(upper/P) = -ln(lower/P)', () => {
+  it('asymmetric log-normal corridor: per-tail multipliers reconstruct the bands', () => {
     const candles = makeCandles(200, 505);
     const result = predict(candles, '4h');
     const logUp = Math.log(result.upperPrice / result.currentPrice);
     const logDown = Math.log(result.lowerPrice / result.currentPrice);
-    expect(logUp).toBeCloseTo(-logDown, 10);
+    // Each tail is calibrated separately; both bands stay strictly around P
+    expect(logUp).toBeCloseTo(result.zScoreUp * result.sigma, 10);
+    expect(logDown).toBeCloseTo(-result.zScoreDown * result.sigma, 10);
+    expect(logUp).toBeGreaterThan(0);
+    expect(logDown).toBeLessThan(0);
   });
 });
 
