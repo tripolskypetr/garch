@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { Garch } from '../src/garch.js';
 import { HarRv } from '../src/har.js';
 import { RealizedGarch, calibrateRealizedGarch } from '../src/realized-garch.js';
-import { predict, createPredictor, type CandleInterval } from '../src/predict.js';
+import { predict, predictRange, createPredictor, type CandleInterval } from '../src/predict.js';
 import { qlike, perCandleParkinson, calculateReturns } from '../src/utils.js';
 import type { Candle } from '../src/types.js';
 
@@ -347,4 +347,25 @@ describe('warm-started rolling predictions', () => {
     // The point of warm starts; generous margin to stay CI-safe
     expect(warmMs).toBeLessThan(coldMs);
   }, 900_000);
+});
+
+// ── Bounded-work guarantees ──────────────────────────────────
+
+describe('bounded work guarantees', () => {
+  it('predictRange rejects horizons longer than the sample', () => {
+    const cs = skewedCandles(300, 3);
+    expect(() => predictRange(cs, '1h' as CandleInterval, cs.length + 1)).toThrow('steps must not exceed');
+  });
+
+  it('max-horizon, extreme-confidence corridor completes within the work budget', () => {
+    const cs = skewedCandles(300, 4);
+    const t0 = Date.now();
+    const res = predictRange(cs, '1h' as CandleInterval, cs.length, null, 0.9999);
+    expect(Number.isFinite(res.upperPrice)).toBe(true);
+    expect(res.upperPrice).toBeGreaterThan(res.lowerPrice);
+    expect(res.zScoreUp).toBeGreaterThan(0);
+    expect(res.zScoreDown).toBeGreaterThan(0);
+    // O(steps) work capped by SIM_WORK_BUDGET — not a hang at any inputs
+    expect(Date.now() - t0).toBeLessThan(60_000);
+  });
 });

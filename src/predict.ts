@@ -730,22 +730,39 @@ function simRandn(rng: () => number): number {
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
 
-/** Marsaglia–Tsang gamma sampler (shape a ≥ 1). */
+// Horizon-simulation sizing: two tails × SIM_TAIL_DRAWS target samples,
+// bounded from both sides, with a hard cap on total work (B·steps).
+const SIM_TAIL_DRAWS = 200;
+const SIM_MIN_DRAWS = 500;
+const SIM_MAX_DRAWS = 40_000;
+const SIM_WORK_BUDGET = 20_000_000;
+
+/**
+ * Marsaglia–Tsang gamma sampler (shape a ≥ 1).
+ *
+ * Rejection sampling accepts >96% of proposals for a ≥ 1, so the caps are
+ * never reached on valid inputs — they are a hard termination guarantee:
+ * a NaN slipping into the parameters would otherwise make every accept
+ * condition false and spin both loops forever.
+ */
 function gammaSample(a: number, rng: () => number): number {
   const d = a - 1 / 3;
   const c = 1 / Math.sqrt(9 * d);
-  for (;;) {
-    let x: number;
-    let v: number;
-    do {
+  for (let iter = 0; iter < 100; iter++) {
+    let x = simRandn(rng);
+    let v = 1 + c * x;
+    for (let inner = 0; inner < 100 && v <= 0; inner++) {
       x = simRandn(rng);
       v = 1 + c * x;
-    } while (v <= 0);
+    }
+    if (!(v > 0)) break;
     v = v * v * v;
     const u = rng();
     if (u < 1 - 0.0331 * x * x * x * x) return d * v;
     if (Math.log(u) < 0.5 * x * x + d * (1 - v + Math.log(v))) return d * v;
   }
+  // Degrades a single draw to the distribution mean — never hangs
+  return a;
 }
 
 /** Sampler for standardized (unit-variance) Student-t(df); Gaussian for df > 100. */
@@ -781,8 +798,17 @@ function simulateHorizonTails(
   const f = factorPath && factorPath.length >= steps ? factorPath : new Array(steps).fill(1);
   const rng = mulberry32(0x5eed1e55);
   const drawZ = makeTSampler(fit.df, rng);
-  // Enough draws that each requested tail holds ≥ ~200 samples
-  const B = Math.min(40000, Math.max(4000, Math.ceil(400 / Math.max(1 - confidence, 1e-4))));
+  // Draw count: enough that each requested tail holds ≥ SIM_TAIL_DRAWS
+  // samples, clamped so B·steps never exceeds SIM_WORK_BUDGET path-steps —
+  // runtime stays bounded no matter what horizon or confidence is asked.
+  const B = Math.max(
+    SIM_MIN_DRAWS,
+    Math.min(
+      SIM_MAX_DRAWS,
+      Math.ceil((2 * SIM_TAIL_DRAWS) / Math.max(1 - confidence, 1e-4)),
+      Math.floor(SIM_WORK_BUDGET / steps),
+    ),
+  );
 
   const cum: number[] = [];
   let acc = 0;
@@ -968,6 +994,12 @@ function runPredict(
   confidence: number,
   warm?: WarmState,
 ): PredictionResult {
+  // Hard bound on the horizon: forecasts, seasonal paths, and the horizon
+  // simulation are all O(steps) — an unbounded horizon is unbounded work,
+  // and a corridor further out than the whole sample is meaningless anyway.
+  if (steps > candles.length) {
+    throw new Error(`steps must not exceed the sample length (${candles.length}), got ${steps}`);
+  }
   const periodsPerYear = INTERVALS_PER_YEAR[interval];
   const nReturns = candles.length - 1;
 
@@ -1077,6 +1109,7 @@ export function predict(
  * through the fitted recursions (volatility feedback and fat-tail decay
  * included).
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
+ * @param steps — horizon in candles, 1 ≤ steps ≤ candles.length.
  */
 export function predictRange(
   candles: Candle[],
