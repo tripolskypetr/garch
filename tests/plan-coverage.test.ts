@@ -16,7 +16,7 @@ import {
   EXPECTED_ABS_NORMAL,
   expectedAbsStudentT,
 } from '../src/index.js';
-import { chi2Survival, probit } from '../src/utils.js';
+import { chi2Survival, probit, studentTProbit } from '../src/utils.js';
 import type { Candle } from '../src/index.js';
 
 // ── helpers ──────────────────────────────────────────────────
@@ -340,14 +340,14 @@ describe('predict output field consistency', () => {
   it('lowerPrice = currentPrice * exp(-z*sigma)', () => {
     const candles = makeCandles(200, 303);
     const result = predict(candles, '4h');
-    const z = probit(0.6827);
+    const z = studentTProbit(0.6827, result.df);
     expect(result.lowerPrice).toBeCloseTo(result.currentPrice * Math.exp(-z * result.sigma), 10);
   });
 
   it('move = currentPrice * (exp(z*sigma) - 1)', () => {
     const candles = makeCandles(200, 404);
     const result = predict(candles, '4h');
-    const z = probit(0.6827);
+    const z = studentTProbit(0.6827, result.df);
     expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(z * result.sigma) - 1), 10);
   });
 
@@ -535,13 +535,11 @@ describe('numerical stability', () => {
 // ── 11. backtest edge cases ─────────────────────────────────
 
 describe('backtest edge cases', () => {
-  it('works at MIN_CANDLES boundary for 4h (200 candles)', () => {
+  it('throws at MIN_CANDLES boundary for 4h (200 candles)', () => {
     // 200 candles, window = max(200, floor(200*0.75)) = 200
-    // Loop: i=200 to 198 → no iterations → total=0, hits/total = NaN
-    // This is a known edge case: 0/0 >= 68 → false
+    // Loop would be empty (total=0) — no candle left to test, so throw
     const candles = makeCandles(200, 1001);
-    const result = backtest(candles, '4h');
-    expect(typeof result).toBe('boolean');
+    expect(() => backtest(candles, '4h')).toThrow(/candles/i);
   });
 
   it('works with enough candles beyond window', () => {

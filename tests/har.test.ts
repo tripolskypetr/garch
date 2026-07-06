@@ -8,7 +8,7 @@ import {
   studentTNegLL,
   type Candle,
 } from '../src/index.js';
-import { probit } from '../src/utils.js';
+import { studentTProbit } from '../src/utils.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -414,7 +414,7 @@ describe('HAR-RV integration with predict', () => {
   it('move = currentPrice * (exp(z*sigma) - 1)', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    const z = probit(0.6827);
+    const z = studentTProbit(0.6827, result.df);
     expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(z * result.sigma) - 1), 10);
   });
 
@@ -463,7 +463,7 @@ describe('HAR-RV integration with predict', () => {
     const candles = makeCandles(300, 42);
     const result = predict(candles, '4h', 50000);
     expect(result.currentPrice).toBe(50000);
-    const z = probit(0.6827);
+    const z = studentTProbit(0.6827, result.df);
     expect(result.move).toBeCloseTo(50000 * (Math.exp(z * result.sigma) - 1), 5);
   });
 });

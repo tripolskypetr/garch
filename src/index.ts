@@ -23,6 +23,9 @@ export {
   profileStudentTDf,
   qlike,
   probit,
+  incompleteBeta,
+  studentTCdf,
+  studentTProbit,
 } from './utils.js';
 
 // Prediction
@@ -30,6 +33,8 @@ export {
   predict,
   predictRange,
   backtest,
+  backtestStats,
+  type BacktestStats,
   type CandleInterval,
   type PredictionResult,
 } from './predict.js';

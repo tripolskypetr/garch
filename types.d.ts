@@ -473,6 +473,28 @@ declare function studentTNegLL(returns: number[], varianceSeries: number[], df: 
  */
 declare function expectedAbsStudentT(df: number): number;
 /**
+ * Regularized incomplete beta function I_x(a, b).
+ */
+declare function incompleteBeta(x: number, a: number, b: number): number;
+/**
+ * CDF of the (raw, unstandardized) Student-t distribution with df degrees
+ * of freedom: P(T ≤ t).
+ */
+declare function studentTCdf(t: number, df: number): number;
+/**
+ * Two-sided quantile of the STANDARDIZED Student-t distribution
+ * (unit variance). The t-analog of probit(): returns z such that
+ * P(|Z| ≤ z) = confidence when Z ~ t(df) scaled to variance 1.
+ *
+ * This is what price corridors must use when the model was fitted with
+ * Student-t innovations: with fat tails (small df) the Gaussian probit
+ * makes 68% bands too wide and 99% bands dangerously narrow.
+ *
+ * Falls back to probit() for df > 200 (Gaussian regime) or df ≤ 2
+ * (variance undefined).
+ */
+declare function studentTProbit(confidence: number, df: number): number;
+/**
  * 1D grid search for optimal df that minimizes Student-t neg-LL.
  * Used by HAR-RV and NoVaS where df is profiled after main optimization.
  */
@@ -512,26 +534,52 @@ interface PredictionResult {
     lowerPrice: number;
     /** Volatility model auto-selected by QLIKE. */
     modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
+    /** Student-t degrees of freedom used for the corridor quantile (profiled on scale-corrected residuals). */
+    df: number;
     /** `true` when the model converged, persistence < 0.999, and Ljung-Box p-value ≥ 0.05. */
     reliable: boolean;
 }
 /**
  * Forecast expected price range for t+1 (next candle).
  *
- * Auto-selects the best volatility model via QLIKE.
- * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * Auto-selects the best volatility model via QLIKE, rescales the variance
+ * to the return scale (Var(r/σ) = 1), and builds bands with the fitted
+ * Student-t quantile: P·exp(±z·σ), where z = studentTProbit(confidence, df).
+ * With fat-tailed data this keeps empirical coverage at the requested
+ * confidence — a Gaussian z over-covers the center and under-covers tails.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
- *   Common values: 0.90 → z=1.645, 0.95 → z=1.96, 0.99 → z=2.576.
+ *   Common values: 0.90, 0.95, 0.99.
  */
 declare function predict(candles: Candle[], interval: CandleInterval, currentPrice?: number | null, confidence?: number): PredictionResult;
 /**
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * Uses log-normal price bands: P·exp(±z·σ), where z = studentTProbit(confidence, df).
+ * The single-period df is used for multi-step horizons too — aggregated
+ * returns are closer to Gaussian, so this errs on the wide (safe) side in tails.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
 declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number | null, confidence?: number): PredictionResult;
+interface BacktestStats {
+    /** Number of test candles whose close landed inside the predicted corridor. */
+    hits: number;
+    /** Number of walk-forward predictions made. */
+    total: number;
+    /** Empirical coverage in percent (0–100). Compare against `confidence · 100`. */
+    hitRate: number;
+}
+/**
+ * Walk-forward calibration statistics for predict.
+ *
+ * Refits the model at every step on a rolling window (75% of candles,
+ * min MIN_CANDLES) and checks whether the next close lands inside the
+ * predicted corridor. A well-calibrated tool has hitRate ≈ confidence·100.
+ * Throws if not enough candles for the given interval.
+ * @param confidence — two-sided probability in (0,1) for the prediction band.
+ *   Default ≈0.6827 (±1σ).
+ */
+declare function backtestStats(candles: Candle[], interval: CandleInterval, confidence?: number): BacktestStats;
 /**
  * Walk-forward backtest of predict.
  *
@@ -558,5 +606,5 @@ declare function nelderMeadMultiStart(fn: (x: number[]) => number, x0: number[],
     restarts?: number;
 }): OptimizerResult;
 
-export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, probit, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTNegLL, yangZhangVariance };
-export type { CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, GjrGarchOptions, GjrGarchParams, HarRvOptions, HarRvParams, LeverageStats, NoVaSOptions, NoVaSParams, OptimizerResult, PredictionResult, VolatilityForecast };
+export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, backtestStats, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, incompleteBeta, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, probit, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTCdf, studentTNegLL, studentTProbit, yangZhangVariance };
+export type { BacktestStats, CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, GjrGarchOptions, GjrGarchParams, HarRvOptions, HarRvParams, LeverageStats, NoVaSOptions, NoVaSParams, OptimizerResult, PredictionResult, VolatilityForecast };

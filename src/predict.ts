@@ -4,7 +4,14 @@ import { Egarch } from './egarch.js';
 import { GjrGarch } from './gjr-garch.js';
 import { HarRv } from './har.js';
 import { NoVaS } from './novas.js';
-import { ljungBox, calculateReturns, perCandleParkinson, qlike, probit } from './utils.js';
+import {
+  ljungBox,
+  calculateReturns,
+  perCandleParkinson,
+  qlike,
+  studentTProbit,
+  profileStudentTDf,
+} from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
 
@@ -62,6 +69,8 @@ export interface PredictionResult {
   lowerPrice: number;
   /** Volatility model auto-selected by QLIKE. */
   modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
+  /** Student-t degrees of freedom used for the corridor quantile (profiled on scale-corrected residuals). */
+  df: number;
   /** `true` when the model converged, persistence < 0.999, and Ljung-Box p-value ≥ 0.05. */
   reliable: boolean;
 }
@@ -75,6 +84,12 @@ function assertMinCandles(candles: Candle[], interval: CandleInterval): void {
     const c = candles[i];
     if (!isFinite(c.close) || c.close <= 0) {
       throw new Error(`Invalid close price at candle ${i}: ${c.close}`);
+    }
+    if (!isFinite(c.open) || c.open <= 0 || !isFinite(c.high) || c.high <= 0 || !isFinite(c.low) || c.low <= 0) {
+      throw new Error(`Invalid OHLC at candle ${i}: open=${c.open} high=${c.high} low=${c.low}`);
+    }
+    if (c.high < c.low) {
+      throw new Error(`Invalid candle ${i}: high (${c.high}) < low (${c.low})`);
     }
   }
   const recommended = RECOMMENDED_CANDLES[interval];
@@ -92,6 +107,55 @@ interface FitResult {
   persistence: number;
   varianceSeries: number[];
   returns: number[];
+  df: number;
+}
+
+// Skip the model burn-in region (HAR long lag = 22, NoVaS lags = 10,
+// GARCH initial-variance seeding) when scoring and calibrating.
+const BURN_IN = 22;
+
+/**
+ * Empirical variance-scale correction.
+ *
+ * RV-based models (HAR-RV, NoVaS) forecast Parkinson realized variance,
+ * which is NOT the same quantity as the close-to-close return variance the
+ * price corridor needs — range-based RV is systematically smaller whenever
+ * moves happen between closes (gaps, thin wicks). The corridor must satisfy
+ * Var(r_t / σ_t) = 1, so rescale by c = E[r²/σ²] measured on the sample.
+ *
+ * For MLE-calibrated GARCH-family fits c ≈ 1 (the likelihood already
+ * self-calibrates the level), so this is a no-op there.
+ *
+ * z² is capped at 50 to keep a single extreme print from distorting the
+ * scale (bias of the cap is <2% even at df = 5).
+ */
+function varianceScaleCorrection(returns: number[], varianceSeries: number[]): number {
+  let sum = 0;
+  let count = 0;
+  for (let i = BURN_IN; i < returns.length; i++) {
+    const v = varianceSeries[i];
+    if (!(v > 0) || !isFinite(v)) continue;
+    const z2 = (returns[i] * returns[i]) / v;
+    if (!isFinite(z2)) continue;
+    sum += Math.min(z2, 50);
+    count++;
+  }
+  if (count < 30) return 1;
+  const c = sum / count;
+  if (!isFinite(c) || c <= 0) return 1;
+  // Sanity clamp: beyond this the fit is garbage and `reliable` flags it
+  return Math.min(100, Math.max(0.01, c));
+}
+
+function applyScale(fit: FitResult, c: number, periodsPerYear: number): void {
+  if (c === 1) return;
+  fit.varianceSeries = fit.varianceSeries.map(v => v * c);
+  const variance = fit.forecast.variance.map(v => v * c);
+  fit.forecast = {
+    variance,
+    volatility: variance.map(v => Math.sqrt(v)),
+    annualized: variance.map(v => Math.sqrt(v * periodsPerYear) * 100),
+  };
 }
 
 function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number): FitResult {
@@ -107,6 +171,7 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
     persistence: garchFit.params.persistence,
     varianceSeries: garchModel.getVarianceSeries(garchFit.params),
     returns: garchModel.getReturns(),
+    df: garchFit.params.df,
   };
 
   const egarchModel = new Egarch(candles, { periodsPerYear });
@@ -120,6 +185,7 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
       persistence: egarchFit.params.persistence,
       varianceSeries: egarchModel.getVarianceSeries(egarchFit.params),
       returns: egarchModel.getReturns(),
+      df: egarchFit.params.df,
     };
   }
 
@@ -133,6 +199,7 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
       persistence: gjrFit.params.persistence,
       varianceSeries: gjrModel.getVarianceSeries(gjrFit.params),
       returns: gjrModel.getReturns(),
+      df: gjrFit.params.df,
     };
   }
 
@@ -154,6 +221,7 @@ function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): Fit
       persistence: fit.params.persistence,
       varianceSeries: model.getVarianceSeries(fit.params),
       returns: model.getReturns(),
+      df: fit.params.df,
     };
   } catch {
     return null;
@@ -175,6 +243,7 @@ function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): Fit
       persistence: fit.params.persistence,
       varianceSeries: model.getForecastVarianceSeries(fit.params),
       returns: model.getReturns(),
+      df: fit.params.df,
     };
   } catch {
     return null;
@@ -211,6 +280,15 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
     }
   }
 
+  // Calibrate the winner to the return scale: QLIKE picks the best RV
+  // forecaster, but the corridor needs the return-variance scale.
+  const c = varianceScaleCorrection(best.returns, best.varianceSeries);
+  applyScale(best, c, periodsPerYear);
+
+  // Re-profile tail thickness on the corrected residuals — this df drives
+  // the corridor quantile.
+  best.df = profileStudentTDf(best.returns, best.varianceSeries);
+
   return best;
 }
 
@@ -230,10 +308,13 @@ function checkReliable(fit: FitResult): boolean {
 /**
  * Forecast expected price range for t+1 (next candle).
  *
- * Auto-selects the best volatility model via QLIKE.
- * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * Auto-selects the best volatility model via QLIKE, rescales the variance
+ * to the return scale (Var(r/σ) = 1), and builds bands with the fitted
+ * Student-t quantile: P·exp(±z·σ), where z = studentTProbit(confidence, df).
+ * With fat-tailed data this keeps empirical coverage at the requested
+ * confidence — a Gaussian z over-covers the center and under-covers tails.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
- *   Common values: 0.90 → z=1.645, 0.95 → z=1.96, 0.99 → z=2.576.
+ *   Common values: 0.90, 0.95, 0.99.
  */
 export function predict(
   candles: Candle[],
@@ -245,8 +326,8 @@ export function predict(
 
   currentPrice = currentPrice || candles[candles.length - 1].close;
 
-  const z = probit(confidence);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], 1);
+  const z = studentTProbit(confidence, fit.df);
 
   const sigma = fit.forecast.volatility[0];
   const upperPrice = currentPrice * Math.exp(z * sigma);
@@ -256,6 +337,7 @@ export function predict(
     modelType: fit.modelType,
     currentPrice,
     sigma,
+    df: fit.df,
     move: upperPrice - currentPrice,
     movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,
@@ -268,7 +350,9 @@ export function predict(
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Uses log-normal price bands: P·exp(±z·σ), where z = probit(confidence).
+ * Uses log-normal price bands: P·exp(±z·σ), where z = studentTProbit(confidence, df).
+ * The single-period df is used for multi-step horizons too — aggregated
+ * returns are closer to Gaussian, so this errs on the wide (safe) side in tails.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
 export function predictRange(
@@ -279,8 +363,8 @@ export function predictRange(
   confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
-  const z = probit(confidence);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], steps);
+  const z = studentTProbit(confidence, fit.df);
 
   currentPrice = currentPrice || candles[candles.length - 1].close;
 
@@ -293,6 +377,7 @@ export function predictRange(
     modelType: fit.modelType,
     currentPrice,
     sigma,
+    df: fit.df,
     move: upperPrice - currentPrice,
     movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,
@@ -304,6 +389,55 @@ export function predictRange(
 // ── Backtest ──────────────────────────────────────────────────
 
 const BACKTEST_WINDOW_RATIO = 0.75;
+
+export interface BacktestStats {
+  /** Number of test candles whose close landed inside the predicted corridor. */
+  hits: number;
+  /** Number of walk-forward predictions made. */
+  total: number;
+  /** Empirical coverage in percent (0–100). Compare against `confidence · 100`. */
+  hitRate: number;
+}
+
+/**
+ * Walk-forward calibration statistics for predict.
+ *
+ * Refits the model at every step on a rolling window (75% of candles,
+ * min MIN_CANDLES) and checks whether the next close lands inside the
+ * predicted corridor. A well-calibrated tool has hitRate ≈ confidence·100.
+ * Throws if not enough candles for the given interval.
+ * @param confidence — two-sided probability in (0,1) for the prediction band.
+ *   Default ≈0.6827 (±1σ).
+ */
+export function backtestStats(
+  candles: Candle[],
+  interval: CandleInterval,
+  confidence = 0.6827,
+): BacktestStats {
+  assertMinCandles(candles, interval);
+
+  const window = Math.max(MIN_CANDLES[interval], Math.floor(candles.length * BACKTEST_WINDOW_RATIO));
+  if (candles.length - 1 <= window) {
+    throw new Error(
+      `Need at least ${window + 2} candles to backtest ${interval} interval, got ${candles.length}`,
+    );
+  }
+  let hits = 0;
+  let total = 0;
+
+  for (let i = window; i < candles.length - 1; i++) {
+    const slice = candles.slice(i - window, i + 1);
+    const predicted = predict(slice, interval, slice[slice.length - 1].close, confidence);
+    const actual = candles[i + 1].close;
+
+    if (actual >= predicted.lowerPrice && actual <= predicted.upperPrice) {
+      hits++;
+    }
+    total++;
+  }
+
+  return { hits, total, hitRate: (hits / total) * 100 };
+}
 
 /**
  * Walk-forward backtest of predict.
@@ -325,21 +459,6 @@ export function backtest(
   if (requiredPercent <= 0) return true;
   if (requiredPercent >= 100) return false;
 
-  const window = Math.max(MIN_CANDLES[interval], Math.floor(candles.length * BACKTEST_WINDOW_RATIO));
-  let hits = 0;
-  let total = 0;
-
-  for (let i = window; i < candles.length - 1; i++) {
-    const slice = candles.slice(i - window, i + 1);
-    const predicted = predict(slice, interval, slice[slice.length - 1].close, confidence);
-    const actual = candles[i + 1].close;
-
-    if (actual >= predicted.lowerPrice && actual <= predicted.upperPrice) {
-      hits++;
-    }
-    total++;
-  }
-
-  return (hits / total) * 100 >= requiredPercent;
+  return backtestStats(candles, interval, confidence).hitRate >= requiredPercent;
 }
 

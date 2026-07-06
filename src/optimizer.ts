@@ -111,9 +111,16 @@ export function nelderMead(
     }
   }
 
+  // Re-sort before returning: on maxIter exit the last iteration may have
+  // placed a better point at the worst-vertex slot without a sort pass.
+  let bestIdx = 0;
+  for (let i = 1; i <= n; i++) {
+    if (values[i] < values[bestIdx]) bestIdx = i;
+  }
+
   return {
-    x: simplex[0],
-    fx: values[0],
+    x: simplex[bestIdx],
+    fx: values[bestIdx],
     iterations,
     converged,
   };

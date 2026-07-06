@@ -220,12 +220,14 @@ export class Egarch {
       + gamma * z
       + beta * Math.log(lastVariance);
 
+    logVariance = Math.max(-50, Math.min(50, logVariance));
     variance.push(Math.exp(logVariance));
 
     // Multi-step: assume E[z] = 0, E[|z|] = eAbsZ
     // So the α and γ terms contribute 0 on average
     for (let h = 1; h < steps; h++) {
       logVariance = omega + beta * logVariance;
+      logVariance = Math.max(-50, Math.min(50, logVariance));
       variance.push(Math.exp(logVariance));
     }
 
