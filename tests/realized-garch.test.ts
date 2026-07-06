@@ -344,58 +344,41 @@ describe('bad OHLC data in GARCH/EGARCH', () => {
     return candles;
   }
 
-  it('GARCH with NaN high still produces a fit (degrades gracefully)', () => {
+  it('GARCH with NaN high throws a clear validation error', () => {
     const candles = makeBadCandles({ high: NaN }, 50);
-    const model = new Garch(candles);
-    const fit = model.fit();
-    // Should not crash — NaN Parkinson → NaN innovation → penalty in LL
-    expect(Number.isFinite(fit.params.omega) || !fit.diagnostics.converged).toBe(true);
+    expect(() => new Garch(candles)).toThrow(/Invalid OHLC at candle 50/);
   });
 
-  it('EGARCH with NaN high does not crash', () => {
+  it('EGARCH with NaN high throws a clear validation error', () => {
     const candles = makeBadCandles({ high: NaN }, 50);
-    const model = new Egarch(candles);
-    // Should not throw — NaN Parkinson propagates but optimizer still terminates
-    const fit = model.fit();
-    expect(fit.params).toBeDefined();
-    expect(fit.diagnostics).toBeDefined();
+    expect(() => new Egarch(candles)).toThrow(/Invalid OHLC at candle 50/);
   });
 
-  it('GARCH with high < low does not crash', () => {
-    // high < low → ln(H/L) is negative but squared → still positive Parkinson RV
+  it('GARCH with high < low throws a clear validation error', () => {
     const candles = makeCandles(100, 42);
     const c = candles[50];
     candles[50] = { ...c, high: c.low * 0.99, low: c.high * 1.01 };
-    const model = new Garch(candles);
-    const fit = model.fit();
-    expect(fit.diagnostics.converged).toBe(true);
+    expect(() => new Garch(candles)).toThrow(/high.*low/i);
   });
 
-  it('EGARCH with high < low does not crash', () => {
+  it('EGARCH with high < low throws a clear validation error', () => {
     const candles = makeCandles(100, 42);
     const c = candles[50];
     candles[50] = { ...c, high: c.low * 0.99, low: c.high * 1.01 };
-    const model = new Egarch(candles);
-    const fit = model.fit();
-    expect(fit.diagnostics.converged).toBe(true);
+    expect(() => new Egarch(candles)).toThrow(/high.*low/i);
   });
 
-  it('GJR-GARCH with NaN high does not crash', () => {
+  it('GJR-GARCH with NaN high throws a clear validation error', () => {
     const candles = makeCandles(100, 42);
     candles[50] = { ...candles[50], high: NaN };
-    const model = new GjrGarch(candles);
-    const fit = model.fit();
-    expect(fit.params).toBeDefined();
-    expect(fit.diagnostics).toBeDefined();
+    expect(() => new GjrGarch(candles)).toThrow(/Invalid OHLC at candle 50/);
   });
 
-  it('GJR-GARCH with high < low does not crash', () => {
+  it('GJR-GARCH with high < low throws a clear validation error', () => {
     const candles = makeCandles(100, 42);
     const c = candles[50];
     candles[50] = { ...c, high: c.low * 0.99, low: c.high * 1.01 };
-    const model = new GjrGarch(candles);
-    const fit = model.fit();
-    expect(fit.diagnostics.converged).toBe(true);
+    expect(() => new GjrGarch(candles)).toThrow(/high.*low/i);
   });
 
   it('Parkinson RV is still positive when high < low (ln² always ≥ 0)', () => {

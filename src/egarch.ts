@@ -11,6 +11,7 @@ import {
   EXPECTED_ABS_NORMAL,
   logGamma,
   expectedAbsStudentT,
+  validateCandles,
 } from './utils.js';
 
 export interface EgarchOptions {
@@ -51,6 +52,7 @@ export class Egarch {
       this.rv = null;
     } else {
       const candles = data as Candle[];
+      validateCandles(candles);
       this.returns = calculateReturns(candles);
       this.initialVariance = yangZhangVariance(candles);
       // Parkinson (1980) per-candle RV: ~5× more efficient than r²
@@ -75,6 +77,18 @@ export class Egarch {
       // EGARCH allows negative gamma, but beta should ensure stationarity
       if (Math.abs(beta) >= 0.9999) return 1e10;
       if (df <= 2.01 || df > 100) return 1e10;
+
+      // ω/(1−β) is the implied unconditional ln(σ²). When β rides toward ±1
+      // on weakly-identified data the likelihood surface is flat along this
+      // ridge and the implied long-run variance drifts orders of magnitude
+      // away from the sample variance measured on the same data. Hard wall
+      // at 4 orders of magnitude, plus a weak Gaussian prior (sd = 1 in
+      // log-variance) that resolves the flat direction toward the sample
+      // level while leaving well-identified fits untouched.
+      const impliedLogVar = omega / (1 - beta);
+      if (!isFinite(impliedLogVar) || Math.abs(impliedLogVar - initLogVar) > Math.log(1e4)) return 1e10;
+      const priorDev = impliedLogVar - initLogVar;
+      const prior = 0.5 * priorDev * priorDev;
 
       const eAbsZ = expectedAbsStudentT(df);
       const halfDfPlus1 = (df + 1) / 2;
@@ -111,15 +125,17 @@ export class Egarch {
         ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));
       }
 
-      return -(ll + constant);
+      return -(ll + constant) + prior;
     }
 
-    // Initial guesses
-    // omega approximates log of unconditional variance when other params are small
-    const omega0 = initLogVar * 0.1;
+    // Initial guesses: variance targeting in log space —
+    // E[ln σ²] = ω/(1−β), so ω₀ = ln(σ̂²)·(1−β₀) starts the optimizer at
+    // the observed volatility level (ω₀ = 0.1·ln σ̂² implied a level of
+    // 2·ln σ̂² with β₀ = 0.95 — orders of magnitude off).
+    const beta0 = 0.95;
+    const omega0 = initLogVar * (1 - beta0);
     const alpha0 = 0.1;
     const gamma0 = -0.05; // Negative for typical leverage effect
-    const beta0 = 0.95;
     const df0 = 5;
 
     const result = nelderMeadMultiStart(
@@ -136,7 +152,9 @@ export class Egarch {
     const unconditionalVariance = Math.exp(unconditionalLogVar);
     const annualizedVol = Math.sqrt(unconditionalVariance * this.periodsPerYear) * 100;
 
-    const logLikelihood = -result.fx;
+    // Report the pure likelihood: strip the shrinkage prior evaluated at the optimum
+    const priorAtOptimum = 0.5 * (unconditionalLogVar - initLogVar) ** 2;
+    const logLikelihood = -(result.fx - priorAtOptimum);
     const numParams = 5;
 
     return {

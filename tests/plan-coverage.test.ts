@@ -16,7 +16,7 @@ import {
   EXPECTED_ABS_NORMAL,
   expectedAbsStudentT,
 } from '../src/index.js';
-import { chi2Survival, probit, studentTProbit } from '../src/utils.js';
+import { chi2Survival, probit } from '../src/utils.js';
 import type { Candle } from '../src/index.js';
 
 // ── helpers ──────────────────────────────────────────────────
@@ -340,15 +340,13 @@ describe('predict output field consistency', () => {
   it('lowerPrice = currentPrice * exp(-z*sigma)', () => {
     const candles = makeCandles(200, 303);
     const result = predict(candles, '4h');
-    const z = studentTProbit(0.6827, result.df);
-    expect(result.lowerPrice).toBeCloseTo(result.currentPrice * Math.exp(-z * result.sigma), 10);
+    expect(result.lowerPrice).toBeCloseTo(result.currentPrice * Math.exp(-result.zScore * result.sigma), 10);
   });
 
   it('move = currentPrice * (exp(z*sigma) - 1)', () => {
     const candles = makeCandles(200, 404);
     const result = predict(candles, '4h');
-    const z = studentTProbit(0.6827, result.df);
-    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(z * result.sigma) - 1), 10);
+    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(result.zScore * result.sigma) - 1), 10);
   });
 
   it('log-normal corridor: ln(upper/P) = -ln(lower/P)', () => {

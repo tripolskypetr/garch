@@ -7,6 +7,8 @@ export { NoVaS, calibrateNoVaS, type NoVaSOptions } from './novas.js';
 
 // Utilities
 export {
+  validateCandles,
+  empiricalQuantile,
   calculateReturns,
   calculateReturnsFromPrices,
   sampleVariance,

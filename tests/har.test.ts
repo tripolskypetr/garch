@@ -8,7 +8,6 @@ import {
   studentTNegLL,
   type Candle,
 } from '../src/index.js';
-import { studentTProbit } from '../src/utils.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -414,8 +413,7 @@ describe('HAR-RV integration with predict', () => {
   it('move = currentPrice * (exp(z*sigma) - 1)', () => {
     const candles = makeCandles(500, 42);
     const result = predict(candles, '4h');
-    const z = studentTProbit(0.6827, result.df);
-    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(z * result.sigma) - 1), 10);
+    expect(result.move).toBeCloseTo(result.currentPrice * (Math.exp(result.zScore * result.sigma) - 1), 10);
   });
 
   it('predictRange cumulative sigma > single-step sigma', () => {
@@ -463,8 +461,7 @@ describe('HAR-RV integration with predict', () => {
     const candles = makeCandles(300, 42);
     const result = predict(candles, '4h', 50000);
     expect(result.currentPrice).toBe(50000);
-    const z = studentTProbit(0.6827, result.df);
-    expect(result.move).toBeCloseTo(50000 * (Math.exp(z * result.sigma) - 1), 5);
+    expect(result.move).toBeCloseTo(50000 * (Math.exp(result.zScore * result.sigma) - 1), 5);
   });
 });
 
@@ -1573,7 +1570,7 @@ describe('HAR-RV invalid inputs', () => {
   it('NaN in candle close throws', () => {
     const candles = makeCandles(200, 42);
     candles[50] = { ...candles[50], close: NaN };
-    expect(() => new HarRv(candles)).toThrow('Invalid close price');
+    expect(() => new HarRv(candles)).toThrow(/Invalid/);
   });
 });
 

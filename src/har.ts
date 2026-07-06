@@ -8,6 +8,7 @@ import {
   calculateBIC,
   studentTNegLL,
   profileStudentTDf,
+  validateCandles,
 } from './utils.js';
 
 export interface HarRvOptions {
@@ -170,6 +171,7 @@ export class HarRv {
       this.rv = this.returns.map(r => r * r);
     } else {
       const candles = data as Candle[];
+      validateCandles(candles);
       this.returns = calculateReturns(candles);
       // Parkinson (1980) per-candle RV: (1/(4·ln2))·(ln(H/L))²
       this.rv = perCandleParkinson(candles, this.returns);

@@ -530,20 +530,14 @@ describe('HAR-RV forecast with Parkinson-based RV', () => {
 // ═══════════════════════════════════════════════════════════════
 
 describe('Candle OHLC validation', () => {
-  it('high < low candle → Parkinson still computes (ln(H/L) is negative, squared is positive)', () => {
-    // This is invalid market data, but test that it doesn't crash
+  it('high < low candle → constructor rejects the data with a clear error', () => {
+    // Invalid market data must fail loudly, not silently produce garbage RV
     const candles = makeCandles(100, 42);
     // Swap high and low on one candle
     const bad = { ...candles[50], high: candles[50].low - 0.01, low: candles[50].high + 0.01 };
     candles[50] = bad;
 
-    // Should not throw — ln(H/L) where H<L gives negative, squared is positive
-    const model = new HarRv(candles);
-    const rv = model.getRv();
-    // The rv value for that candle should still be finite and positive
-    // rv[49] uses candles[50]'s OHLC
-    expect(rv[49]).toBeGreaterThan(0);
-    expect(Number.isFinite(rv[49])).toBe(true);
+    expect(() => new HarRv(candles)).toThrow(/high.*low/i);
   });
 
   it('open outside [low, high] candle → fit still works', () => {
@@ -586,17 +580,11 @@ describe('Candle OHLC validation', () => {
     expect(result.diagnostics.converged).toBe(true);
   });
 
-  it('negative high → ln(negative/positive) → NaN in Parkinson → falls back to r²', () => {
+  it('negative high → constructor rejects the data with a clear error', () => {
     const candles = makeCandles(100, 42);
     candles[25] = { ...candles[25], high: -1 };
 
-    // ln(-1/positive) = NaN → Parkinson = NaN → NaN > 0 is false → r² fallback
-    const model = new HarRv(candles);
-    const rv = model.getRv();
-    // rv[24] uses candles[25] — should be r² fallback (NaN comparison with 0 returns false)
-    const returns = model.getReturns();
-    // The Parkinson will be NaN, and NaN > 0 is false, so it falls back to r²
-    expect(rv[24]).toBeCloseTo(returns[24] * returns[24], 12);
+    expect(() => new HarRv(candles)).toThrow(/Invalid OHLC at candle 25/);
   });
 });
 
@@ -1115,8 +1103,9 @@ describe('Realized EGARCH (Candle[] uses Parkinson magnitude)', () => {
       // True EGARCH dynamics with strong leverage (gamma = -0.15)
       logVar = -0.05 + 0.15 * (Math.abs(z) - eAbsZ) + (-0.15) * z + 0.95 * logVar;
       const close = price * Math.exp(r);
-      const high = Math.max(price, close) * (1 + Math.abs(r) * 0.5);
-      const low = Math.min(price, close) * (1 - Math.abs(r) * 0.5);
+      // exp-based wicks keep low > 0 even during volatility bursts
+      const high = Math.max(price, close) * Math.exp(Math.abs(r) * 0.5);
+      const low = Math.min(price, close) * Math.exp(-Math.abs(r) * 0.5);
       candles.push({ open: price, high, low, close, volume: 1000 });
       price = close;
     }

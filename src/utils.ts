@@ -1,6 +1,37 @@
 import type { Candle, LeverageStats } from './types.js';
 
 /**
+ * Validate OHLC integrity. Garbage candles (NaN, non-positive prices,
+ * high < low) otherwise propagate silently as NaN through every estimator.
+ */
+export function validateCandles(candles: Candle[]): void {
+  for (let i = 0; i < candles.length; i++) {
+    const c = candles[i];
+    if (!isFinite(c.open) || c.open <= 0 || !isFinite(c.high) || c.high <= 0
+      || !isFinite(c.low) || c.low <= 0 || !isFinite(c.close) || c.close <= 0) {
+      throw new Error(`Invalid OHLC at candle ${i}: open=${c.open} high=${c.high} low=${c.low} close=${c.close}`);
+    }
+    if (c.high < c.low) {
+      throw new Error(`Invalid candle ${i}: high (${c.high}) < low (${c.low})`);
+    }
+  }
+}
+
+/**
+ * Linear-interpolation quantile of a pre-sorted (ascending) sample.
+ */
+export function empiricalQuantile(sortedAsc: number[], p: number): number {
+  const n = sortedAsc.length;
+  if (n === 0) return NaN;
+  if (n === 1) return sortedAsc[0];
+  const pos = Math.min(Math.max(p, 0), 1) * (n - 1);
+  const lo = Math.floor(pos);
+  const hi = Math.min(lo + 1, n - 1);
+  const frac = pos - lo;
+  return sortedAsc[lo] * (1 - frac) + sortedAsc[hi] * frac;
+}
+
+/**
  * Calculate log returns from candles
  */
 export function calculateReturns(candles: Candle[]): number[] {

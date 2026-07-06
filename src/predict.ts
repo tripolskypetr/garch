@@ -11,6 +11,7 @@ import {
   qlike,
   studentTProbit,
   profileStudentTDf,
+  empiricalQuantile,
 } from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
@@ -69,8 +70,15 @@ export interface PredictionResult {
   lowerPrice: number;
   /** Volatility model auto-selected by QLIKE. */
   modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
-  /** Student-t degrees of freedom used for the corridor quantile (profiled on scale-corrected residuals). */
+  /** Student-t degrees of freedom profiled on scale-corrected residuals. */
   df: number;
+  /**
+   * Corridor multiplier actually used: blend of the empirical |z| quantile
+   * of the standardized residuals and the Student-t(df) quantile, weighted
+   * by how much data supports the requested tail. Reconstruct bands as
+   * `currentPrice · exp(±zScore · sigma)`.
+   */
+  zScore: number;
   /** `true` when the model converged, persistence < 0.999, and Ljung-Box p-value ≥ 0.05. */
   reliable: boolean;
 }
@@ -108,11 +116,63 @@ interface FitResult {
   varianceSeries: number[];
   returns: number[];
   df: number;
+  /** Structural warm-up of the winning model (its longest lag / seeding region). */
+  warmup: number;
+  /** Sorted |r_t/σ_t| over the post-warm-up sample — the empirical calibration sample. */
+  absZ: number[];
 }
 
-// Skip the model burn-in region (HAR long lag = 22, NoVaS lags = 10,
-// GARCH initial-variance seeding) when scoring and calibrating.
-const BURN_IN = 22;
+/**
+ * Candidate HAR lag triples for this interval and sample size.
+ *
+ * The textbook (1, 5, 22) encodes *daily equity* horizons (day/week/month
+ * in trading days) and is wrong for intraday 24/7 markets. Candidates are
+ * built from the candle interval itself — one bar / one day / one week in
+ * bars — capped by what the sample can support (long lag ≤ n/5 and enough
+ * rows for the OLS). The final choice among candidates is made by QLIKE
+ * on a common sample, not by convention.
+ */
+export function selectHarLagCandidates(
+  nReturns: number,
+  periodsPerYear: number,
+): Array<[number, number, number]> {
+  const maxLong = Math.floor(Math.min(nReturns / 5, nReturns - 31));
+  const candidates: Array<[number, number, number]> = [];
+
+  if (maxLong >= 22) candidates.push([1, 5, 22]);
+
+  const barsPerDay = Math.round(periodsPerYear / 365);
+  if (barsPerDay >= 3) {
+    const barsPerWeek = 7 * barsPerDay;
+    if (barsPerWeek <= maxLong) {
+      candidates.push([1, barsPerDay, barsPerWeek]);
+    } else if (barsPerDay * 2 <= maxLong) {
+      // Week does not fit the sample — use the longest supported horizon
+      candidates.push([1, barsPerDay, maxLong]);
+    }
+  }
+
+  if (candidates.length === 0) {
+    // Tiny sample: geometric spacing within what the data supports
+    const long = Math.max(3, maxLong);
+    candidates.push([1, Math.max(2, Math.round(Math.sqrt(long))), long]);
+  }
+
+  // Dedupe
+  return candidates.filter((c, i) =>
+    candidates.findIndex(d => d[0] === c[0] && d[1] === c[1] && d[2] === c[2]) === i,
+  );
+}
+
+/**
+ * NoVaS lag order grown with the sample (~n^(1/3), the standard
+ * lag-order rate), instead of a fixed p = 10. Anchored to p = 10 at
+ * n ≈ 500 (where a far-lag ARCH(10) ground truth is recovered best);
+ * adapts down for short samples, up for long ones.
+ */
+export function adaptiveNovasLags(nReturns: number): number {
+  return Math.min(20, Math.max(5, Math.round(1.26 * Math.cbrt(nReturns))));
+}
 
 /**
  * Empirical variance-scale correction.
@@ -128,11 +188,14 @@ const BURN_IN = 22;
  *
  * z² is capped at 50 to keep a single extreme print from distorting the
  * scale (bias of the cap is <2% even at df = 5).
+ *
+ * `warmup` is the winning model's own structural warm-up (longest lag /
+ * seeding region), not a fixed constant.
  */
-function varianceScaleCorrection(returns: number[], varianceSeries: number[]): number {
+function varianceScaleCorrection(returns: number[], varianceSeries: number[], warmup: number): number {
   let sum = 0;
   let count = 0;
-  for (let i = BURN_IN; i < returns.length; i++) {
+  for (let i = warmup; i < returns.length; i++) {
     const v = varianceSeries[i];
     if (!(v > 0) || !isFinite(v)) continue;
     const z2 = (returns[i] * returns[i]) / v;
@@ -172,6 +235,8 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
     varianceSeries: garchModel.getVarianceSeries(garchFit.params),
     returns: garchModel.getReturns(),
     df: garchFit.params.df,
+    warmup: 0,
+    absZ: [],
   };
 
   const egarchModel = new Egarch(candles, { periodsPerYear });
@@ -186,12 +251,15 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
       varianceSeries: egarchModel.getVarianceSeries(egarchFit.params),
       returns: egarchModel.getReturns(),
       df: egarchFit.params.df,
+      warmup: 0,
+      absZ: [],
     };
   }
 
   const gjrModel = new GjrGarch(candles, { periodsPerYear });
   const gjrFit = gjrModel.fit();
   if (gjrFit.diagnostics.aic < bestAic) {
+    bestAic = gjrFit.diagnostics.aic;
     best = {
       forecast: gjrModel.forecast(gjrFit.params, steps),
       modelType: 'gjr-garch',
@@ -200,6 +268,8 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
       varianceSeries: gjrModel.getVarianceSeries(gjrFit.params),
       returns: gjrModel.getReturns(),
       df: gjrFit.params.df,
+      warmup: 0,
+      absZ: [],
     };
   }
 
@@ -207,30 +277,55 @@ function fitGarchFamily(candles: Candle[], periodsPerYear: number, steps: number
 }
 
 function fitHarRv(candles: Candle[], periodsPerYear: number, steps: number): FitResult | null {
-  try {
-    const model = new HarRv(candles, { periodsPerYear });
-    const fit = model.fit();
+  const candidates = selectHarLagCandidates(candles.length - 1, periodsPerYear);
+  const commonWarmup = Math.max(...candidates.map(c => c[2]));
 
-    // Skip HAR-RV if persistence >= 1 (non-stationary) or R² too low
-    if (fit.params.persistence >= 1 || fit.params.r2 < 0) return null;
+  let bestModel: HarRv | null = null;
+  let bestFit: ReturnType<HarRv['fit']> | null = null;
+  let bestLags: [number, number, number] | null = null;
+  let bestScore = Infinity;
 
-    return {
-      forecast: model.forecast(fit.params, steps),
-      modelType: 'har-rv',
-      converged: fit.diagnostics.converged,
-      persistence: fit.params.persistence,
-      varianceSeries: model.getVarianceSeries(fit.params),
-      returns: model.getReturns(),
-      df: fit.params.df,
-    };
-  } catch {
-    return null;
+  for (const [shortLag, mediumLag, longLag] of candidates) {
+    try {
+      const model = new HarRv(candles, { periodsPerYear, shortLag, mediumLag, longLag });
+      const fit = model.fit();
+
+      // Skip candidate if non-stationary or worse than the mean predictor
+      if (fit.params.persistence >= 1 || fit.params.r2 < 0) continue;
+
+      // Score candidates on a common sample (past every candidate's warm-up)
+      const series = model.getVarianceSeries(fit.params);
+      const score = qlike(series.slice(commonWarmup), model.getRv().slice(commonWarmup));
+      if (score < bestScore) {
+        bestModel = model;
+        bestFit = fit;
+        bestLags = [shortLag, mediumLag, longLag];
+        bestScore = score;
+      }
+    } catch {
+      continue;
+    }
   }
+
+  if (!bestModel || !bestFit || !bestLags) return null;
+
+  return {
+    forecast: bestModel.forecast(bestFit.params, steps),
+    modelType: 'har-rv',
+    converged: bestFit.diagnostics.converged,
+    persistence: bestFit.params.persistence,
+    varianceSeries: bestModel.getVarianceSeries(bestFit.params),
+    returns: bestModel.getReturns(),
+    df: bestFit.params.df,
+    warmup: bestLags[2],
+    absZ: [],
+  };
 }
 
 function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): FitResult | null {
   try {
-    const model = new NoVaS(candles, { periodsPerYear });
+    const lags = adaptiveNovasLags(candles.length - 1);
+    const model = new NoVaS(candles, { periodsPerYear, lags });
     const fit = model.fit();
 
     // Skip if persistence >= 1 (non-stationary)
@@ -244,6 +339,8 @@ function fitNoVaS(candles: Candle[], periodsPerYear: number, steps: number): Fit
       varianceSeries: model.getForecastVarianceSeries(fit.params),
       returns: model.getReturns(),
       df: fit.params.df,
+      warmup: lags,
+      absZ: [],
     };
   } catch {
     return null;
@@ -282,14 +379,55 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
 
   // Calibrate the winner to the return scale: QLIKE picks the best RV
   // forecaster, but the corridor needs the return-variance scale.
-  const c = varianceScaleCorrection(best.returns, best.varianceSeries);
+  // Warm-up comes from the winner's own structure (its longest lag /
+  // seeding region), capped so calibration keeps a usable sample.
+  const nReturns = best.returns.length;
+  const warmup = Math.min(Math.max(best.warmup, 10), Math.floor(nReturns / 4));
+  best.warmup = warmup;
+
+  const c = varianceScaleCorrection(best.returns, best.varianceSeries, warmup);
   applyScale(best, c, periodsPerYear);
 
   // Re-profile tail thickness on the corrected residuals — this df drives
-  // the corridor quantile.
+  // the model half of the corridor quantile.
   best.df = profileStudentTDf(best.returns, best.varianceSeries);
 
+  // Empirical calibration sample: |z_t| of the corrected residuals
+  const absZ: number[] = [];
+  for (let i = warmup; i < nReturns; i++) {
+    const v = best.varianceSeries[i];
+    if (!(v > 0) || !isFinite(v)) continue;
+    const a = Math.abs(best.returns[i]) / Math.sqrt(v);
+    if (isFinite(a)) absZ.push(a);
+  }
+  absZ.sort((a, b) => a - b);
+  best.absZ = absZ;
+
   return best;
+}
+
+/**
+ * Corridor multiplier for a two-sided confidence level.
+ *
+ * Instead of trusting the fitted Student-t shape outright, the multiplier
+ * is anchored to the data: the empirical quantile of |z_t| is used where
+ * the sample actually supports the requested tail, and the t(df) quantile
+ * takes over as the tail runs out of observations. The blend weight is the
+ * expected number of tail exceedances m = n·(1−confidence) shrunk by a
+ * prior weight of 10 pseudo-observations — no fixed distributional shape,
+ * no hand-picked z table.
+ */
+function corridorZ(fit: FitResult, confidence: number): number {
+  const zModel = studentTProbit(confidence, fit.df);
+  const n = fit.absZ.length;
+  if (n < 50) return zModel;
+
+  const zEmpirical = empiricalQuantile(fit.absZ, confidence);
+  if (!isFinite(zEmpirical)) return zModel;
+
+  const tailCount = n * (1 - confidence);
+  const w = tailCount / (tailCount + 10);
+  return w * zEmpirical + (1 - w) * zModel;
 }
 
 function checkReliable(fit: FitResult): boolean {
@@ -309,10 +447,11 @@ function checkReliable(fit: FitResult): boolean {
  * Forecast expected price range for t+1 (next candle).
  *
  * Auto-selects the best volatility model via QLIKE, rescales the variance
- * to the return scale (Var(r/σ) = 1), and builds bands with the fitted
- * Student-t quantile: P·exp(±z·σ), where z = studentTProbit(confidence, df).
- * With fat-tailed data this keeps empirical coverage at the requested
- * confidence — a Gaussian z over-covers the center and under-covers tails.
+ * to the return scale (Var(r/σ) = 1), and builds bands P·exp(±z·σ) where
+ * z is calibrated on the data itself: the empirical |z| quantile of the
+ * standardized residuals blended with the fitted Student-t quantile as the
+ * tail runs out of observations (see corridorZ). Empirical coverage tracks
+ * the requested confidence without assuming a distributional shape.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  *   Common values: 0.90, 0.95, 0.99.
  */
@@ -327,7 +466,7 @@ export function predict(
   currentPrice = currentPrice || candles[candles.length - 1].close;
 
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], 1);
-  const z = studentTProbit(confidence, fit.df);
+  const z = corridorZ(fit, confidence);
 
   const sigma = fit.forecast.volatility[0];
   const upperPrice = currentPrice * Math.exp(z * sigma);
@@ -338,6 +477,7 @@ export function predict(
     currentPrice,
     sigma,
     df: fit.df,
+    zScore: z,
     move: upperPrice - currentPrice,
     movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,
@@ -350,9 +490,10 @@ export function predict(
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Uses log-normal price bands: P·exp(±z·σ), where z = studentTProbit(confidence, df).
- * The single-period df is used for multi-step horizons too — aggregated
- * returns are closer to Gaussian, so this errs on the wide (safe) side in tails.
+ * Uses log-normal price bands P·exp(±z·σ) with the same data-calibrated z
+ * as predict(). The single-period tail shape is applied to the multi-step
+ * horizon too — aggregated returns are closer to Gaussian, so this errs on
+ * the wide (safe) side in tails.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
 export function predictRange(
@@ -364,7 +505,7 @@ export function predictRange(
 ): PredictionResult {
   assertMinCandles(candles, interval);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], steps);
-  const z = studentTProbit(confidence, fit.df);
+  const z = corridorZ(fit, confidence);
 
   currentPrice = currentPrice || candles[candles.length - 1].close;
 
@@ -378,6 +519,7 @@ export function predictRange(
     currentPrice,
     sigma,
     df: fit.df,
+    zScore: z,
     move: upperPrice - currentPrice,
     movePercent: (upperPrice / currentPrice - 1) * 100,
     upperPrice,

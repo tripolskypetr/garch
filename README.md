@@ -20,7 +20,9 @@ npm install garch
 
 Forecast expected price range for the next candle (t+1). Auto-selects the best model (GARCH, EGARCH, GJR-GARCH, HAR-RV or NoVaS) by QLIKE forecast-error comparison.
 
-Uses **log-normal price bands**: `P·exp(±z·σ)`, where `z = probit(confidence)`. This correctly maps log-return volatility back to price space — the corridor is asymmetric (upside > downside in absolute terms) and `lowerPrice` can never go negative.
+Uses **log-normal price bands**: `P·exp(±z·σ)`. This correctly maps log-return volatility back to price space — the corridor is asymmetric (upside > downside in absolute terms) and `lowerPrice` can never go negative.
+
+The multiplier `z` is **calibrated on the data itself**, not taken from a Gaussian table: the model's variance series is rescaled so standardized residuals have unit variance, then `z` blends the empirical |z| quantile of those residuals with the fitted Student-t(df) quantile (the empirical part dominates where the sample supports the tail, the t part takes over in the far tail). The actual multiplier used is returned as `zScore`.
 
 ```typescript
 import { predict } from 'garch';
@@ -35,37 +37,33 @@ const result = predict(candles, '4h');
 //   sigma: 0.012,          // 1.2% per-period volatility
 //   move: 1177,            // upward expected move (upper - current), in dollars
 //   movePercent: 1.21,     // upward expected move, in percent (0–100)
-//   upperPrice: 98677,     // P·exp(+σ) — ceiling
-//   lowerPrice: 96337,     // P·exp(-σ) — floor
+//   upperPrice: 98677,     // P·exp(+z·σ) — ceiling
+//   lowerPrice: 96337,     // P·exp(-z·σ) — floor
 //   modelType: 'egarch',
+//   df: 6.3,               // fitted Student-t tail thickness
+//   zScore: 0.97,          // corridor multiplier actually used
 //   reliable: true
 // }
 
-// 95% VaR band (z ≈ 1.96)
+// 95% VaR band
 const var95 = predict(candles, '4h', undefined, 0.95);
 
 // Custom reference price (e.g. VWAP)
 const result = predict(candles, '4h', vwap);
 ```
 
-**Confidence → z mapping:**
+**Confidence → z (Gaussian reference only — actual z is data-driven):**
 
-| `confidence` | z-score | Meaning |
-|-------------|---------|---------|
-| 0.6827 (default) | 1.00 | ±1σ, ~68% of moves captured |
-| 0.90 | 1.645 | Moderate VaR |
-| 0.95 | 1.96 | 95% VaR (standard) |
-| 0.99 | 2.576 | Conservative VaR |
+| `confidence` | Gaussian z | Typical fat-tail z (df≈5) | Meaning |
+|-------------|-----------|---------------------------|---------|
+| 0.6827 (default) | 1.00 | ≈0.86 | ±1σ, ~68% of moves captured |
+| 0.90 | 1.645 | ≈1.56 | Moderate VaR |
+| 0.95 | 1.96 | ≈1.99 | 95% VaR (standard) |
+| 0.99 | 2.576 | ≈3.12 | Conservative VaR |
 
-Any value in (0, 1) is valid — the table above lists common choices, but `probit` computes z for arbitrary confidence.
+Any value in (0, 1) is valid. With fat-tailed market data the Gaussian table is systematically wrong — too wide in the center, dangerously narrow in the tails — which is why the corridor uses the data-calibrated multiplier instead. Check `result.zScore` for the value actually applied.
 
-Higher confidence = wider corridor. `sigma` stays the same (it's the model's volatility estimate), only the z-multiplier changes. Example with sigma=1.2% and P=$97,500:
-
-| `confidence` | z | upperPrice | lowerPrice | Corridor width |
-|-------------|---|-----------|-----------|----------------|
-| 0.6827 | 1.00 | $98,677 | $96,337 | $2,340 |
-| 0.95 | 1.96 | $99,808 | $95,222 | $4,586 |
-| 0.99 | 2.58 | $100,545 | $94,520 | $6,025 |
+Higher confidence = wider corridor. `sigma` stays the same (it's the model's volatility estimate), only the z-multiplier changes.
 
 **When to use which:**
 
@@ -80,7 +78,7 @@ Higher confidence = wider corridor. `sigma` stays the same (it's the model's vol
 | `candles` | `Candle[]` | required | OHLCV candle data |
 | `interval` | `CandleInterval` | required | Candle timeframe |
 | `currentPrice` | `number` | last close | Reference price to center the corridor |
-| `confidence` | `number` | `0.6827` | Two-sided probability in (0,1). Controls band width via `z = probit(confidence)` |
+| `confidence` | `number` | `0.6827` | Two-sided probability in (0,1). Controls band width via the data-calibrated `zScore` |
 
 **Returns:** `PredictionResult`
 
@@ -93,6 +91,8 @@ interface PredictionResult {
   upperPrice: number;             // P · exp(+z·σ)
   lowerPrice: number;             // P · exp(-z·σ)
   modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas'; // Auto-selected model
+  df: number;                     // Fitted Student-t degrees of freedom (tail thickness)
+  zScore: number;                 // Corridor multiplier actually used for the bands
   reliable: boolean;              // Quality flag (convergence + persistence + Ljung-Box)
 }
 ```
@@ -140,7 +140,7 @@ const var95 = predictRange(candles, '4h', 5, undefined, 0.95);
 
 Walk-forward validation of `predict`. Uses 75% of candles for fitting, 25% for testing. Checks if the model's price corridor captures actual price moves at the required hit rate.
 
-`confidence` and `requiredPercent` are independent: `confidence` controls the **band width** (via `probit`), `requiredPercent` controls the **pass/fail threshold**.
+`confidence` and `requiredPercent` are independent: `confidence` controls the **band width** (via the data-calibrated `zScore`), `requiredPercent` controls the **pass/fail threshold**.
 
 ```typescript
 import { backtest } from 'garch';
@@ -161,6 +161,29 @@ backtest(candles, '4h', undefined, 50);   // ±1σ band, hit rate >= 50%
 | `requiredPercent` | `number` | `68` | Minimum hit rate (0–100) to pass |
 
 **Returns:** `boolean`
+
+---
+
+### `backtestStats(candles, interval, confidence?)`
+
+Same walk-forward loop as `backtest`, but returns the raw calibration numbers instead of a pass/fail flag. A well-calibrated setup has `hitRate ≈ confidence · 100` — run this on your own market data before trusting the corridor.
+
+```typescript
+import { backtestStats } from 'garch';
+
+const stats = backtestStats(candles, '4h', 0.95);
+// { hits: 61, total: 66, hitRate: 92.4 }  → compare against 95
+```
+
+**Returns:** `BacktestStats`
+
+```typescript
+interface BacktestStats {
+  hits: number;     // closes that landed inside the corridor
+  total: number;    // walk-forward predictions made
+  hitRate: number;  // hits/total · 100 — compare with confidence · 100
+}
+```
 
 ---
 
@@ -455,7 +478,7 @@ upperPrice = P · exp(+z · sigma)
 lowerPrice = P · exp(-z · sigma)
 ```
 
-where `z = probit(confidence)` is the z-score corresponding to the desired two-sided confidence level. This produces **asymmetric** bands (upside > downside in absolute terms) and guarantees `lowerPrice > 0`.
+where `z` is the corridor multiplier for the desired two-sided confidence level (returned as `zScore`). It is calibrated on the data: the empirical quantile of the standardized residuals |r/σ| blended with the fitted Student-t(df) quantile, so it needs neither the Gaussian assumption nor a fixed z table. This produces **asymmetric** bands (upside > downside in absolute terms) and guarantees `lowerPrice > 0`.
 
 The previous linear approximation `P · (1 ± sigma)` is a first-order Taylor expansion of `exp(±sigma)`. The difference grows with sigma:
 
@@ -467,7 +490,7 @@ The previous linear approximation `P · (1 ± sigma)` is a first-order Taylor ex
 
 ### Probit (Inverse Normal CDF)
 
-`probit(confidence)` computes the inverse of the standard normal CDF (Phi^{-1}). It converts a two-sided probability to a z-score:
+`probit(confidence)` computes the inverse of the standard normal CDF (Phi^{-1}). It is the Gaussian limit of the corridor multiplier (the fitted Student-t quantile `studentTProbit(confidence, df)` converges to it as df grows). It converts a two-sided probability to a z-score:
 
 ```
 confidence = P(-z < Z < z),  Z ~ N(0,1)

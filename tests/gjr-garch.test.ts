@@ -826,22 +826,17 @@ describe('Realized GJR-GARCH (Candle path)', () => {
     }
   });
 
-  it('bad OHLC: NaN high does not crash', () => {
+  it('bad OHLC: NaN high throws a clear validation error', () => {
     const candles = makeCandles(100, 42);
     candles[50] = { ...candles[50], high: NaN };
-    const model = new GjrGarch(candles);
-    const fit = model.fit();
-    expect(fit.params).toBeDefined();
-    expect(fit.diagnostics).toBeDefined();
+    expect(() => new GjrGarch(candles)).toThrow(/Invalid OHLC at candle 50/);
   });
 
-  it('bad OHLC: high < low does not crash', () => {
+  it('bad OHLC: high < low throws a clear validation error', () => {
     const candles = makeCandles(100, 42);
     const c = candles[50];
     candles[50] = { ...c, high: c.low * 0.99, low: c.high * 1.01 };
-    const model = new GjrGarch(candles);
-    const fit = model.fit();
-    expect(fit.diagnostics.converged).toBe(true);
+    expect(() => new GjrGarch(candles)).toThrow(/high.*low/i);
   });
 
   it('all-identical candles (O=H=L=C) do not crash', () => {

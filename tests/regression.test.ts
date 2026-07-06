@@ -74,13 +74,14 @@ describe('Regression snapshots', () => {
   it('EGARCH params on makePrices(100)', () => {
     const r = calibrateEgarch(prices);
 
-    // Student-t MLE exact snapshot values (multi-start NM)
-    expect(r.params.omega).toBeCloseTo(-17.14926022591494, 2);
-    expect(r.params.alpha).toBeCloseTo(-0.18620604429063128, 4);
-    expect(r.params.gamma).toBeCloseTo(0.2153455073902208, 4);
-    expect(r.params.beta).toBeCloseTo(-0.8739926664103224, 4);
-    expect(r.params.df).toBeCloseTo(100, 0);
-    expect(r.diagnostics.logLikelihood).toBeCloseTo(313.4950269569696, 2);
+    // Student-t MLE exact snapshot values (multi-start NM with
+    // variance-targeted seed and unconditional-variance shrinkage prior)
+    expect(r.params.omega).toBeCloseTo(-0.1386627458845543, 2);
+    expect(r.params.alpha).toBeCloseTo(-0.42570542673898637, 4);
+    expect(r.params.gamma).toBeCloseTo(0.11940894095505178, 4);
+    expect(r.params.beta).toBeCloseTo(0.9851459206202924, 4);
+    expect(r.params.df).toBeCloseTo(47.5, 0);
+    expect(r.diagnostics.logLikelihood).toBeCloseTo(313.76613777463155, 2);
     expect(r.diagnostics.converged).toBe(true);
   });
 });

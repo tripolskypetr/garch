@@ -9,6 +9,7 @@ import {
   calculateAIC,
   calculateBIC,
   logGamma,
+  validateCandles,
 } from './utils.js';
 
 export interface GarchOptions {
@@ -48,6 +49,7 @@ export class Garch {
       this.rv = null;
     } else {
       const candles = data as Candle[];
+      validateCandles(candles);
       this.returns = calculateReturns(candles);
       this.initialVariance = yangZhangVariance(candles);
       // Parkinson (1980) per-candle RV: ~5× more efficient than r²
@@ -98,10 +100,12 @@ export class Garch {
       return -(ll + constant);
     }
 
-    // Initial guesses
-    const omega0 = initVar * 0.05;
+    // Initial guesses: variance targeting — ω₀ implied by the sample
+    // variance and the persistence seed, so the optimizer starts at the
+    // observed volatility level for any asset/interval.
     const alpha0 = 0.1;
     const beta0 = 0.85;
+    const omega0 = initVar * (1 - alpha0 - beta0);
     const df0 = 5;
 
     const result = nelderMeadMultiStart(negLogLikelihood, [omega0, alpha0, beta0, df0], { maxIter, tol, restarts: 3 });

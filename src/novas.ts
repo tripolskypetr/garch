@@ -9,6 +9,7 @@ import {
   calculateBIC,
   studentTNegLL,
   profileStudentTDf,
+  validateCandles,
 } from './utils.js';
 
 export interface NoVaSOptions {
@@ -60,6 +61,7 @@ export class NoVaS {
       this.rv = null;
     } else {
       const candles = data as Candle[];
+      validateCandles(candles);
       this.returns = calculateReturns(candles);
       // Parkinson (1980) per-candle RV: ~5× more efficient than r²
       this.rv = perCandleParkinson(candles, this.returns);

@@ -9,6 +9,7 @@ import {
   calculateAIC,
   calculateBIC,
   logGamma,
+  validateCandles,
 } from './utils.js';
 
 export interface GjrGarchOptions {
@@ -52,6 +53,7 @@ export class GjrGarch {
       this.rv = null;
     } else {
       const candles = data as Candle[];
+      validateCandles(candles);
       this.returns = calculateReturns(candles);
       this.initialVariance = yangZhangVariance(candles);
       this.rv = perCandleParkinson(candles, this.returns);
@@ -100,10 +102,11 @@ export class GjrGarch {
       return -(ll + constant);
     }
 
-    const omega0 = initVar * 0.05;
+    // Variance targeting: ω₀ implied by sample variance and persistence seed
     const alpha0 = 0.05;
     const gamma0 = 0.1;
     const beta0 = 0.85;
+    const omega0 = initVar * (1 - alpha0 - gamma0 / 2 - beta0);
     const df0 = 5;
 
     const result = nelderMeadMultiStart(negLogLikelihood, [omega0, alpha0, gamma0, beta0, df0], { maxIter, tol, restarts: 4 });

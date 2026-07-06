@@ -148,6 +148,11 @@ function shrink(
  *
  * Perturbation uses golden-ratio quasi-random sequence for uniform
  * coverage of the search space without clustering.
+ *
+ * The restart budget adapts to the problem: after the scheduled restarts,
+ * exploration continues while restarts keep finding improvements, so easy
+ * unimodal fits stop early and rugged landscapes get extra effort. The
+ * schedule is deterministic — same inputs, same result.
  */
 const PHI = (1 + Math.sqrt(5)) / 2; // golden ratio
 
@@ -166,8 +171,10 @@ export function nelderMeadMultiStart(
   // Run from original starting point
   let best = nelderMead(fn, x0, { maxIter, tol });
 
-  // Run from perturbed starting points
-  for (let k = 1; k <= restarts; k++) {
+  // Scheduled restarts, then keep going while they pay off.
+  // An explicit restarts=0 opts out of multi-start entirely.
+  const maxRestarts = restarts === 0 ? 0 : restarts * 2 + 4;
+  for (let k = 1; k <= maxRestarts; k++) {
     const perturbed = new Array(n);
     for (let i = 0; i < n; i++) {
       // Quasi-random perturbation: golden-ratio sequence mapped to [-0.5, +0.5]
@@ -179,8 +186,23 @@ export function nelderMeadMultiStart(
     }
 
     const result = nelderMead(fn, perturbed, { maxIter, tol });
+    const improved = result.fx < best.fx - tol * Math.max(1, Math.abs(best.fx));
     if (result.fx < best.fx) {
       best = result;
+    }
+    // Past the scheduled budget, stop at the first non-improving restart
+    if (k >= restarts && !improved) break;
+  }
+
+  // Polish: if the winning run hit maxIter, restart from its solution with
+  // a fresh simplex (up to 3 rounds). Starting at the best point, fx can
+  // only improve; the converged flag reflects the final round honestly.
+  for (let p = 0; p < 3 && !best.converged; p++) {
+    const polished = nelderMead(fn, best.x, { maxIter, tol });
+    if (polished.fx <= best.fx) {
+      best = polished;
+    } else {
+      break;
     }
   }
 

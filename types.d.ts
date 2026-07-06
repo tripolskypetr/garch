@@ -385,6 +385,15 @@ declare class NoVaS {
 declare function calibrateNoVaS(data: Candle[] | number[], options?: NoVaSOptions): CalibrationResult<NoVaSParams>;
 
 /**
+ * Validate OHLC integrity. Garbage candles (NaN, non-positive prices,
+ * high < low) otherwise propagate silently as NaN through every estimator.
+ */
+declare function validateCandles(candles: Candle[]): void;
+/**
+ * Linear-interpolation quantile of a pre-sorted (ascending) sample.
+ */
+declare function empiricalQuantile(sortedAsc: number[], p: number): number;
+/**
  * Calculate log returns from candles
  */
 declare function calculateReturns(candles: Candle[]): number[];
@@ -534,8 +543,15 @@ interface PredictionResult {
     lowerPrice: number;
     /** Volatility model auto-selected by QLIKE. */
     modelType: 'garch' | 'egarch' | 'gjr-garch' | 'har-rv' | 'novas';
-    /** Student-t degrees of freedom used for the corridor quantile (profiled on scale-corrected residuals). */
+    /** Student-t degrees of freedom profiled on scale-corrected residuals. */
     df: number;
+    /**
+     * Corridor multiplier actually used: blend of the empirical |z| quantile
+     * of the standardized residuals and the Student-t(df) quantile, weighted
+     * by how much data supports the requested tail. Reconstruct bands as
+     * `currentPrice · exp(±zScore · sigma)`.
+     */
+    zScore: number;
     /** `true` when the model converged, persistence < 0.999, and Ljung-Box p-value ≥ 0.05. */
     reliable: boolean;
 }
@@ -543,10 +559,11 @@ interface PredictionResult {
  * Forecast expected price range for t+1 (next candle).
  *
  * Auto-selects the best volatility model via QLIKE, rescales the variance
- * to the return scale (Var(r/σ) = 1), and builds bands with the fitted
- * Student-t quantile: P·exp(±z·σ), where z = studentTProbit(confidence, df).
- * With fat-tailed data this keeps empirical coverage at the requested
- * confidence — a Gaussian z over-covers the center and under-covers tails.
+ * to the return scale (Var(r/σ) = 1), and builds bands P·exp(±z·σ) where
+ * z is calibrated on the data itself: the empirical |z| quantile of the
+ * standardized residuals blended with the fitted Student-t quantile as the
+ * tail runs out of observations (see corridorZ). Empirical coverage tracks
+ * the requested confidence without assuming a distributional shape.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  *   Common values: 0.90, 0.95, 0.99.
  */
@@ -555,9 +572,10 @@ declare function predict(candles: Candle[], interval: CandleInterval, currentPri
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Uses log-normal price bands: P·exp(±z·σ), where z = studentTProbit(confidence, df).
- * The single-period df is used for multi-step horizons too — aggregated
- * returns are closer to Gaussian, so this errs on the wide (safe) side in tails.
+ * Uses log-normal price bands P·exp(±z·σ) with the same data-calibrated z
+ * as predict(). The single-period tail shape is applied to the multi-step
+ * horizon too — aggregated returns are closer to Gaussian, so this errs on
+ * the wide (safe) side in tails.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
 declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number | null, confidence?: number): PredictionResult;
@@ -606,5 +624,5 @@ declare function nelderMeadMultiStart(fn: (x: number[]) => number, x0: number[],
     restarts?: number;
 }): OptimizerResult;
 
-export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, backtestStats, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, expectedAbsStudentT, garmanKlassVariance, incompleteBeta, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, probit, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTCdf, studentTNegLL, studentTProbit, yangZhangVariance };
+export { EXPECTED_ABS_NORMAL, Egarch, Garch, GjrGarch, HarRv, NoVaS, backtest, backtestStats, calculateReturns, calculateReturnsFromPrices, calibrateEgarch, calibrateGarch, calibrateGjrGarch, calibrateHarRv, calibrateNoVaS, checkLeverageEffect, empiricalQuantile, expectedAbsStudentT, garmanKlassVariance, incompleteBeta, ljungBox, logGamma, nelderMead, nelderMeadMultiStart, perCandleParkinson, predict, predictRange, probit, profileStudentTDf, qlike, sampleVariance, sampleVarianceWithMean, studentTCdf, studentTNegLL, studentTProbit, validateCandles, yangZhangVariance };
 export type { BacktestStats, CalibrationResult, Candle, CandleInterval, EgarchOptions, EgarchParams, GarchOptions, GarchParams, GjrGarchOptions, GjrGarchParams, HarRvOptions, HarRvParams, LeverageStats, NoVaSOptions, NoVaSParams, OptimizerResult, PredictionResult, VolatilityForecast };
