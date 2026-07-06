@@ -14,6 +14,7 @@ import {
   profileStudentTDf,
   empiricalQuantile,
   validateCandles,
+  sampleVariance,
 } from './utils.js';
 
 export type CandleInterval = '1m' | '3m' | '5m' | '15m' | '30m' | '1h' | '2h' | '4h' | '6h' | '8h';
@@ -468,10 +469,14 @@ function corridorZ(fit: FitResult, confidence: number, steps = 1): number {
 function checkReliable(fit: FitResult): boolean {
   if (!fit.converged || fit.persistence >= 0.999) return false;
 
-  // Degenerate forecast: variance at (or below) the numerical floor means
-  // the fit collapsed (flat market, HAR/NoVaS clamp) — a zero-width
-  // corridor is never a reliable market forecast.
-  if (!(fit.forecast.variance[0] > 1e-16)) return false;
+  // Degenerate forecast: variance collapsed to the numerical clamp
+  // (flat market, HAR/NoVaS 1e-20 floor) — a zero-width corridor is never
+  // a reliable market forecast. Floor is relative to the sample variance
+  // so legitimately low-volatility series are not flagged; a zero-variance
+  // (flat) return series is always degenerate.
+  const sv = sampleVariance(fit.returns);
+  if (!(sv > 0)) return false;
+  if (!(fit.forecast.variance[0] > sv * 1e-8)) return false;
 
   // Ljung-Box on squared standardized residuals
   const { returns, varianceSeries } = fit;

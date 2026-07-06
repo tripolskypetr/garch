@@ -310,7 +310,9 @@ export function studentTNegLL(
   let sum = 0;
   for (let i = 0; i < n; i++) {
     const v = varianceSeries[i];
-    if (v <= 1e-12 || !isFinite(v)) return 1e10;
+    // Positivity only — an absolute floor (1e-12) makes the likelihood
+    // scale-dependent and breaks df profiling on low-volatility series
+    if (v <= 0 || !isFinite(v)) return 1e10;
     sum += 0.5 * Math.log(v) + halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / ((df - 2) * v));
   }
 

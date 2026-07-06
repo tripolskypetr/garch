@@ -73,10 +73,16 @@ export class GjrGarch {
 
     const rv = this.rv;
 
+    // Positivity floors relative to the sample variance: absolute floors
+    // (1e-12) silently reject every feasible parameter vector once the
+    // per-bar return std drops below ~1e-6 (stablecoins, FX minors) and
+    // the optimizer "converges" on the penalty plateau.
+    const varFloor = initVar * 1e-12;
+
     function negLogLikelihood(params: number[]): number {
       const [omega, alpha, gamma, beta, df] = params;
 
-      if (omega <= 1e-12) return 1e10;
+      if (omega <= varFloor) return 1e10;
       if (alpha < 0 || gamma < 0 || beta < 0) return 1e10;
       if (alpha + gamma / 2 + beta >= 0.9999) return 1e10;
       if (df <= 2.01 || df > 100) return 1e10;
@@ -95,7 +101,7 @@ export class GjrGarch {
           variance = omega + alpha * innovation + gamma * innovation * indicator + beta * variance;
         }
 
-        if (variance <= 1e-12) return 1e10;
+        if (variance <= varFloor) return 1e10;
 
         // Student-t log-likelihood
         ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));

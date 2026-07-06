@@ -87,10 +87,14 @@ export class NoVaS {
      * Compute D² for a given weight vector.
      * D² = S² + (K - 3)² where S, K are skewness and kurtosis of W_t.
      */
+    // Relative floor: an absolute epsilon (1e-15) rejects every feasible
+    // weight vector once the sample variance drops below ~1e-14
+    const a0Floor = initVar * 1e-12;
+
     function objectiveD2(rawWeights: number[]): number {
       // Enforce constraints: a_j >= 0 via abs, a_0 > epsilon
       const weights = rawWeights.map(w => Math.abs(w));
-      if (weights[0] < 1e-15) return 1e10;
+      if (weights[0] < a0Floor) return 1e10;
 
       // Stationarity: sum(a_1..a_p) < 1
       let lagSum = 0;
@@ -109,7 +113,7 @@ export class NoVaS {
         for (let j = 1; j <= p; j++) {
           variance += weights[j] * r2[t - j];
         }
-        if (variance <= 1e-15) return 1e10;
+        if (variance <= 0) return 1e10;
 
         const w = returns[t] / Math.sqrt(variance);
         if (!isFinite(w)) return 1e10;

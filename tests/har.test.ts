@@ -1132,7 +1132,7 @@ describe('HAR-RV predict.ts code paths', () => {
     }
     const result = predict(candles, '8h');
     // Should not crash — GARCH family is the fallback
-    expect(['garch', 'egarch', 'novas']).toContain(result.modelType);
+    expect(['garch', 'egarch', 'gjr-garch', 'novas']).toContain(result.modelType);
     expect(Number.isFinite(result.sigma)).toBe(true);
   });
 

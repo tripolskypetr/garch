@@ -73,6 +73,11 @@ export class Egarch {
 
     const rv = this.rv;
 
+    // Relative variance floor: an absolute 1e-12 rejects every feasible
+    // parameter vector once the per-bar return std drops below ~1e-6
+    // (stablecoins, FX minors), leaving only the penalty plateau.
+    const varFloor = this.initialVariance * 1e-12;
+
     function negLogLikelihood(params: number[]): number {
       const [omega, alpha, gamma, beta, df] = params;
 
@@ -121,7 +126,7 @@ export class Egarch {
           variance = Math.exp(logVariance);
         }
 
-        if (variance <= 1e-12 || !isFinite(variance)) return 1e10;
+        if (variance <= varFloor || !isFinite(variance)) return 1e10;
 
         // Student-t log-likelihood
         ll += -0.5 * Math.log(variance) - halfDfPlus1 * Math.log(1 + (returns[i] ** 2) / (dfMinus2 * variance));
