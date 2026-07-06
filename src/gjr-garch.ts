@@ -26,7 +26,7 @@ export interface GjrGarchOptions {
  * where:
  * - ω (omega) > 0: constant term
  * - α (alpha) ≥ 0: symmetric shock response
- * - γ (gamma) ≥ 0: asymmetric leverage coefficient
+ * - γ (gamma) ≥ −α: asymmetric leverage coefficient (negative = inverted leverage)
  * - β (beta) ≥ 0: persistence
  * - I(r<0) = 1 when return is negative, 0 otherwise
  * - Stationarity: α + γ/2 + β < 1
@@ -85,7 +85,12 @@ export class GjrGarch {
       const [omega, alpha, gamma, beta, df] = params;
 
       if (omega <= varFloor) return 1e10;
-      if (alpha < 0 || gamma < 0 || beta < 0) return 1e10;
+      if (alpha < 0 || beta < 0) return 1e10;
+      // Positivity of σ² only needs the response to negative returns
+      // (α + γ) to stay non-negative — γ itself may be negative (inverted
+      // leverage: pumps driving volatility harder than dumps, common in
+      // crypto), which a γ ≥ 0 constraint would silently censor.
+      if (alpha + gamma < 0) return 1e10;
       if (alpha + gamma / 2 + beta >= 0.9999) return 1e10;
       if (df <= 2.01 || df > 100) return 1e10;
 

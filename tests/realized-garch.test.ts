@@ -144,18 +144,21 @@ describe('multi-step forecast recursion identical for Candle[] and number[]', ()
     }
   });
 
-  it('EGARCH steps 2+ use ω + β·logVar recursion regardless of input', () => {
+  it('EGARCH steps 2+ use ω + α·m̄ + β·logVar recursion regardless of input', () => {
     const candles = makeCandles(200, 42);
     const model = new Egarch(candles);
     const fit = model.fit();
-    const { omega, beta } = fit.params;
+    const { omega, alpha, beta } = fit.params;
+    // With RV magnitude, E[magnitude − E|z|] = m̄ ≠ 0 stays in the
+    // recursion as drift so the forecast level matches the fitted dynamics
+    const drift = alpha * model.magnitudeDrift(fit.params);
 
     const fc = model.forecast(fit.params, 10);
 
-    // Verify steps 2+ follow logVar = ω + β·logVar_{h-1}
+    // Verify steps 2+ follow logVar = ω + α·m̄ + β·logVar_{h-1}
     for (let h = 1; h < 10; h++) {
       const logVarPrev = Math.log(fc.variance[h - 1]);
-      const expectedLogVar = omega + beta * logVarPrev;
+      const expectedLogVar = omega + drift + beta * logVarPrev;
       expect(fc.variance[h]).toBeCloseTo(Math.exp(expectedLogVar), 10);
     }
   });
@@ -507,10 +510,11 @@ describe('EGARCH forecast multi-step with Candle[]', () => {
     const fc = model.forecast(fit.params, 5);
     expect(fc.variance[0]).toBeCloseTo(Math.exp(logVar1), 10);
 
-    // Steps 2+: ω + β·logVar
+    // Steps 2+: ω + α·m̄ + β·logVar (m̄ keeps the RV-magnitude mean offset)
+    const drift = alpha * model.magnitudeDrift(fit.params);
     let logVar = logVar1;
     for (let h = 1; h < 5; h++) {
-      logVar = omega + beta * logVar;
+      logVar = omega + drift + beta * logVar;
       expect(fc.variance[h]).toBeCloseTo(Math.exp(logVar), 10);
     }
   });

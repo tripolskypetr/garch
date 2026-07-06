@@ -228,6 +228,32 @@ export class Egarch {
   }
 
   /**
+   * Mean drift of the magnitude term under the fitted dynamics.
+   *
+   * With RV magnitude, E[√(RV/σ²)] ≠ E[|z|]: the in-sample recursion
+   * carries a mean offset α·m̄ per step that ω absorbed during fitting.
+   * A multi-step forecast that drops the α term entirely would therefore
+   * converge to a level systematically below the fitted dynamics.
+   * Returns m̄ = mean(magnitude − E|z|) over the sample (0 for prices-only
+   * input, where magnitude = |z| and the offset is sampling noise).
+   */
+  magnitudeDrift(params: EgarchParams): number {
+    if (!this.rv) return 0;
+    const { df } = params;
+    const eAbsZ = df > 2 ? expectedAbsStudentT(df) : EXPECTED_ABS_NORMAL;
+    const series = this.getVarianceSeries(params);
+    let sum = 0;
+    let count = 0;
+    for (let i = 1; i < this.returns.length; i++) {
+      const m = Math.sqrt(this.rv[i - 1] / series[i - 1]);
+      if (!isFinite(m)) continue;
+      sum += m - eAbsZ;
+      count++;
+    }
+    return count > 0 ? sum / count : 0;
+  }
+
+  /**
    * Forecast variance forward
    *
    * Note: EGARCH forecasts are more complex because they depend on
@@ -257,10 +283,12 @@ export class Egarch {
     logVariance = Math.max(-50, Math.min(50, logVariance));
     variance.push(Math.exp(logVariance));
 
-    // Multi-step: assume E[z] = 0, E[|z|] = eAbsZ
-    // So the α and γ terms contribute 0 on average
+    // Multi-step: assume E[z] = 0. With RV magnitude the α term has a
+    // nonzero mean α·m̄ under the fitted dynamics — keep it as drift so
+    // the forecast converges to the same level the fit implies.
+    const drift = alpha * this.magnitudeDrift(params);
     for (let h = 1; h < steps; h++) {
-      logVariance = omega + beta * logVariance;
+      logVariance = omega + drift + beta * logVariance;
       logVariance = Math.max(-50, Math.min(50, logVariance));
       variance.push(Math.exp(logVariance));
     }

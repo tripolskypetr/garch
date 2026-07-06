@@ -1219,7 +1219,8 @@ describe('GJR-GARCH', () => {
     expect(result.diagnostics.converged).toBe(true);
     expect(result.params.omega).toBeGreaterThan(0);
     expect(result.params.alpha).toBeGreaterThanOrEqual(0);
-    expect(result.params.gamma).toBeGreaterThanOrEqual(0);
+    // γ may be negative (inverted leverage); positivity needs α + γ ≥ 0
+    expect(result.params.alpha + result.params.gamma).toBeGreaterThanOrEqual(0);
     expect(result.params.beta).toBeGreaterThanOrEqual(0);
   });
 

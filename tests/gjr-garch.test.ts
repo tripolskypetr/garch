@@ -133,7 +133,8 @@ describe('calibrateGjrGarch', () => {
 
     expect(result.params.omega).toBeGreaterThan(0);
     expect(result.params.alpha).toBeGreaterThanOrEqual(0);
-    expect(result.params.gamma).toBeGreaterThanOrEqual(0);
+    // γ may be negative (inverted leverage); positivity needs α + γ ≥ 0
+    expect(result.params.alpha + result.params.gamma).toBeGreaterThanOrEqual(0);
     expect(result.params.beta).toBeGreaterThanOrEqual(0);
   });
 
@@ -410,9 +411,9 @@ describe('GJR-GARCH constraint barriers', () => {
     expect(result.params.alpha).toBeGreaterThanOrEqual(0);
   });
 
-  it('fit never returns gamma < 0', () => {
+  it('fit never violates variance positivity (alpha + gamma >= 0)', () => {
     const result = calibrateGjrGarch(makePrices(200));
-    expect(result.params.gamma).toBeGreaterThanOrEqual(0);
+    expect(result.params.alpha + result.params.gamma).toBeGreaterThanOrEqual(0);
   });
 
   it('fit never returns beta < 0', () => {

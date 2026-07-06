@@ -1009,11 +1009,14 @@ describe('forecast term structure', () => {
     }
   });
 
-  it('EGARCH variance monotonically approaches unconditional', () => {
+  it('EGARCH variance monotonically approaches drift-corrected unconditional', () => {
     const candles = makeAsymmetricCandles(200, 7002);
     const model = new Egarch(candles, { periodsPerYear: 2190 });
     const fit = model.fit();
-    const uncond = fit.params.unconditionalVariance;
+    // With RV magnitude the forecast converges to exp((ω + α·m̄)/(1−β)) —
+    // the level of the fitted dynamics, not the bare exp(ω/(1−β))
+    const { omega, alpha, beta } = fit.params;
+    const uncond = Math.exp((omega + alpha * model.magnitudeDrift(fit.params)) / (1 - beta));
     const forecast = model.forecast(fit.params, 50);
 
     for (let i = 1; i < forecast.variance.length; i++) {
