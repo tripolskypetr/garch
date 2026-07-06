@@ -92,6 +92,7 @@ export interface NoVaSParams {
 export interface OptimizerResult {
   x: number[];
   fx: number;
+  /** Iterations of the winning Nelder-Mead run (not summed across multi-start restarts). */
   iterations: number;
   converged: boolean;
 }

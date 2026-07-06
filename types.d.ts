@@ -83,6 +83,7 @@ interface NoVaSParams {
 interface OptimizerResult {
     x: number[];
     fx: number;
+    /** Iterations of the winning Nelder-Mead run (not summed across multi-start restarts). */
     iterations: number;
     converged: boolean;
 }
@@ -499,8 +500,8 @@ declare function studentTCdf(t: number, df: number): number;
  * Student-t innovations: with fat tails (small df) the Gaussian probit
  * makes 68% bands too wide and 99% bands dangerously narrow.
  *
- * Falls back to probit() for df > 200 (Gaussian regime) or df ≤ 2
- * (variance undefined).
+ * Falls back to probit() for df > 1000 (where the difference from the
+ * Gaussian quantile is < 0.3% even at 99%) or df ≤ 2 (variance undefined).
  */
 declare function studentTProbit(confidence: number, df: number): number;
 /**
@@ -572,10 +573,10 @@ declare function predict(candles: Candle[], interval: CandleInterval, currentPri
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Uses log-normal price bands P·exp(±z·σ) with the same data-calibrated z
- * as predict(). The single-period tail shape is applied to the multi-step
- * horizon too — aggregated returns are closer to Gaussian, so this errs on
- * the wide (safe) side in tails.
+ * Uses log-normal price bands P·exp(±z·σ) where z is calibrated at the
+ * requested horizon: the empirical quantile of |h-step standardized sums|
+ * from the sample itself, blended with a model quantile that relaxes from
+ * t(df) toward Gaussian as aggregation washes the fat tails out.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
 declare function predictRange(candles: Candle[], interval: CandleInterval, steps: number, currentPrice?: number | null, confidence?: number): PredictionResult;
@@ -590,14 +591,21 @@ interface BacktestStats {
 /**
  * Walk-forward calibration statistics for predict.
  *
- * Refits the model at every step on a rolling window (75% of candles,
- * min MIN_CANDLES) and checks whether the next close lands inside the
- * predicted corridor. A well-calibrated tool has hitRate ≈ confidence·100.
+ * Refits the model on a rolling window (75% of candles, min MIN_CANDLES)
+ * and checks whether the next close lands inside the predicted corridor.
+ * A well-calibrated tool has hitRate ≈ confidence·100.
+ *
+ * Every refit costs a full 5-model calibration, so by default the test
+ * points are subsampled to at most ~100 refits (stride grows with the test
+ * span). Pass `stride: 1` to evaluate every candle when runtime is not a
+ * concern, or any positive stride to control the trade-off yourself.
  * Throws if not enough candles for the given interval.
  * @param confidence — two-sided probability in (0,1) for the prediction band.
  *   Default ≈0.6827 (±1σ).
  */
-declare function backtestStats(candles: Candle[], interval: CandleInterval, confidence?: number): BacktestStats;
+declare function backtestStats(candles: Candle[], interval: CandleInterval, confidence?: number, options?: {
+    stride?: number;
+}): BacktestStats;
 /**
  * Walk-forward backtest of predict.
  *

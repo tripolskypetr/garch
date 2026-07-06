@@ -173,6 +173,11 @@ import { backtestStats } from 'garch';
 
 const stats = backtestStats(candles, '4h', 0.95);
 // { hits: 61, total: 66, hitRate: 92.4 }  → compare against 95
+
+// Every test point refits all 5 models, so by default the test span is
+// subsampled to at most ~100 refits. Control it explicitly:
+backtestStats(candles, '4h', 0.95, { stride: 1 });  // every candle (slow)
+backtestStats(candles, '4h', 0.95, { stride: 10 }); // every 10th candle
 ```
 
 **Returns:** `BacktestStats`
@@ -207,6 +212,8 @@ For intervals below 1h, per-candle Parkinson RV is noisier — more data helps O
 ## Timeframes
 
 The `periodsPerYear` value controls annualization of volatility. When using `predict`/`predictRange`/`backtest`, this is handled automatically via the `interval` parameter. When using `Garch`/`Egarch` classes directly, pass `periodsPerYear` manually.
+
+> **Scale caveat for direct class usage:** with `Candle[]` input the model recursions are driven by range-based Parkinson RV, so `params.unconditionalVariance` / `params.annualizedVol` are on the *realized-variance* scale, which can differ from the close-to-close return variance when ranges and returns disagree (gaps, thin wicks). `predict`/`predictRange` correct this automatically (standardized residuals are rescaled to unit variance before the corridor is built); raw `calibrate*` output is not corrected.
 
 | Timeframe | `periodsPerYear` | Notes |
 |-----------|-----------------|-------|
@@ -402,7 +409,7 @@ After D^2 optimization, weights are **rescaled via OLS** on the realized varianc
 forecast_sigma_t^2 = beta_0 + beta_1 * sigma_t^2(D^2)
 ```
 
-D^2 acts as a data-driven smoother over RV lags — more flexible than HAR-RV's fixed rolling means (1, 5, 22). OLS rescaling adjusts for bias with only 2 parameters, keeping the model robust on small samples with noisy per-candle RV.
+D^2 acts as a data-driven smoother over RV lags — more flexible than HAR-RV's three rolling means. OLS rescaling adjusts for bias with only 2 parameters, keeping the model robust on small samples with noisy per-candle RV. Inside `predict` the NoVaS lag order grows with the sample size (~n^(1/3)) instead of being fixed at 10.
 
 Multi-step forecast: replace future innovations with sigma^2 (since E[RV] = E[X^2] = sigma^2), then rescale:
 
@@ -447,7 +454,7 @@ The library fits all five models on every call and picks the best by QLIKE. Each
 
 - **GJR-GARCH** — Same idea as EGARCH (red candles increase vol more than green ones) but the effect is milder and simpler: when the return is negative, a bonus term `gamma * epsilon^2` is added to variance. When positive — nothing extra. A binary switch rather than a continuous asymmetry. Common in altcoins and less panic-prone markets.
 
-- **HAR-RV** — Volatility has memory at multiple horizons. The model takes a single timeframe of candles and internally builds three scales: last candle's RV (short, lag 1), rolling average over 5 candles (medium), and rolling average over 22 candles (long). These three components are combined via OLS regression. Works well when different types of participants (scalpers, swing traders, institutions) all influence the same market at different speeds. If your asset has visible "rhythm" across day/week/month — HAR-RV will likely beat GARCH family (sideways, daily patterns).
+- **HAR-RV** — Volatility has memory at multiple horizons. The model takes a single timeframe of candles and internally builds three scales: last candle's RV (short), a medium rolling average, and a long rolling average, combined via OLS regression. The `HarRv` class defaults to the textbook lags (1, 5, 22 — day/week/month in *trading days*), but `predict` chooses the lag horizons from the candle interval itself (one bar / one day / one week in bars, capped by sample size) and picks the winner by QLIKE — the daily-equity convention is not assumed for 24/7 intraday markets. Works well when different types of participants (scalpers, swing traders, institutions) all influence the same market at different speeds.
 
 - **NoVaS** — Volatility drifts or cycles without clear shock-and-decay patterns. Slow trend changes, regime shifts, compression/expansion phases, or "breathing" patterns that don't fit any parametric formula. Model-free: finds weights `a_0...a_p` that make the normalized series as close to Gaussian as possible (minimizes D^2 = skewness^2 + (kurtosis - 3)^2). No assumptions about the distribution shape.
 

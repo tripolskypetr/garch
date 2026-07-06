@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { studentTCdf, studentTProbit, probit } from '../src/utils.js';
-import { predict, backtestStats, type CandleInterval } from '../src/predict.js';
+import { predict, predictRange, backtestStats, type CandleInterval } from '../src/predict.js';
 import type { Candle } from '../src/types.js';
 
 // ── Deterministic RNG ──────────────────────────────────────────
@@ -91,7 +91,9 @@ describe('studentTProbit', () => {
     for (const conf of [0.6827, 0.9, 0.95, 0.99]) {
       // t(150) is genuinely still ~0.5-1.5% off Gaussian in the far tail
       expect(Math.abs(studentTProbit(conf, 150) - probit(conf))).toBeLessThan(0.02);
-      expect(studentTProbit(conf, 1000)).toBeCloseTo(probit(conf), 6); // probit fallback
+      // continuity at the df=1000 probit-fallback boundary
+      expect(Math.abs(studentTProbit(conf, 1000) - probit(conf))).toBeLessThan(0.005);
+      expect(studentTProbit(conf, 2000)).toBeCloseTo(probit(conf), 6); // probit fallback
     }
   });
 
@@ -164,6 +166,36 @@ describe('walk-forward corridor calibration (t(5) + leverage DGP)', () => {
     expect(coverage68, `68% band coverage=${coverage68.toFixed(1)}%`).toBeGreaterThanOrEqual(59);
     expect(coverage68, `68% band coverage=${coverage68.toFixed(1)}%`).toBeLessThanOrEqual(78);
     expect(coverage99, `99% band coverage=${coverage99.toFixed(1)}%`).toBeGreaterThanOrEqual(93);
+  }, 900_000);
+});
+
+// ── Multi-step horizon calibration ─────────────────────────────
+//
+// A single-period fat-tail quantile applied to an aggregated horizon makes
+// the corridor too narrow in the center: before the horizon-aware fix, the
+// 68% band at 10 steps covered only ~55%. The h-step empirical |Z| sample
+// plus the CLT-relaxed model quantile must bring coverage back to nominal.
+describe('walk-forward predictRange calibration (10-step horizon)', () => {
+  it('68% corridor at 10 steps covers ≈ nominal', () => {
+    const steps = 10;
+    const candles = makeFatTailedCandles(560, 20260706);
+    const window = 300;
+    let hits = 0;
+    let total = 0;
+
+    for (let i = window; i < candles.length - steps; i += 4) {
+      const slice = candles.slice(i - window, i + 1);
+      const price = slice[slice.length - 1].close;
+      const res = predictRange(slice, '1h' as CandleInterval, steps, price, 0.6827);
+      const actual = candles[i + steps].close;
+      if (actual >= res.lowerPrice && actual <= res.upperPrice) hits++;
+      total++;
+    }
+
+    const coverage = (hits / total) * 100;
+    // n≈63 overlapping horizons — loose bounds, catches the ~55% failure mode
+    expect(coverage, `10-step coverage=${coverage.toFixed(1)}% (n=${total})`).toBeGreaterThanOrEqual(58);
+    expect(coverage, `10-step coverage=${coverage.toFixed(1)}% (n=${total})`).toBeLessThanOrEqual(85);
   }, 900_000);
 });
 

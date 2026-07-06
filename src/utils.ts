@@ -399,14 +399,14 @@ export function studentTCdf(t: number, df: number): number {
  * Student-t innovations: with fat tails (small df) the Gaussian probit
  * makes 68% bands too wide and 99% bands dangerously narrow.
  *
- * Falls back to probit() for df > 200 (Gaussian regime) or df ≤ 2
- * (variance undefined).
+ * Falls back to probit() for df > 1000 (where the difference from the
+ * Gaussian quantile is < 0.3% even at 99%) or df ≤ 2 (variance undefined).
  */
 export function studentTProbit(confidence: number, df: number): number {
   if (confidence <= 0 || confidence >= 1) {
     throw new Error(`confidence must be in (0, 1), got ${confidence}`);
   }
-  if (!isFinite(df) || df > 200 || df <= 2) {
+  if (!isFinite(df) || df > 1000 || df <= 2) {
     return probit(confidence);
   }
 

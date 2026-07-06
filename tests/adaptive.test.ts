@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { empiricalQuantile, validateCandles, studentTProbit } from '../src/utils.js';
 import { nelderMead, nelderMeadMultiStart } from '../src/optimizer.js';
-import { selectHarLagCandidates, adaptiveNovasLags, predict, type CandleInterval } from '../src/predict.js';
+import {
+  selectHarLagCandidates,
+  adaptiveNovasLags,
+  predict,
+  predictRange,
+  backtest,
+  backtestStats,
+  type CandleInterval,
+} from '../src/predict.js';
 import type { Candle } from '../src/types.js';
 
 // ── empiricalQuantile ──────────────────────────────────────────
@@ -162,6 +170,39 @@ function makeCandles(n: number, seed: number): Candle[] {
   }
   return candles;
 }
+
+describe('predictRange input validation', () => {
+  it('rejects steps < 1 and non-finite steps', () => {
+    const candles = makeCandles(300, 9);
+    expect(() => predictRange(candles, '4h' as CandleInterval, 0)).toThrow(/steps/);
+    expect(() => predictRange(candles, '4h' as CandleInterval, -3)).toThrow(/steps/);
+    expect(() => predictRange(candles, '4h' as CandleInterval, NaN)).toThrow(/steps/);
+  });
+});
+
+describe('backtestStats stride', () => {
+  it('auto-stride caps refits at ~100 and explicit stride subsamples accordingly', () => {
+    const candles = makeCandles(300, 77);
+    // window = max(200, 225) = 225 → testSpan = 74 → auto stride 1
+    const full = backtestStats(candles, '4h' as CandleInterval, 0.9);
+    expect(full.total).toBe(74);
+
+    const strided = backtestStats(candles, '4h' as CandleInterval, 0.9, { stride: 5 });
+    expect(strided.total).toBe(Math.ceil(74 / 5));
+    expect(strided.hitRate).toBeCloseTo((strided.hits / strided.total) * 100, 10);
+  }, 900_000);
+});
+
+describe('backtest requiredPercent=100 semantics', () => {
+  it('is decided by the actual hit rate, not short-circuited', () => {
+    const candles = makeCandles(300, 77);
+    const stats = backtestStats(candles, '4h' as CandleInterval, 0.6827);
+    const expected = stats.hitRate >= 100;
+    expect(backtest(candles, '4h' as CandleInterval, 0.6827, 100)).toBe(expected);
+    // above 100 is impossible by construction
+    expect(backtest(candles, '4h' as CandleInterval, 0.6827, 101)).toBe(false);
+  }, 900_000);
+});
 
 describe('corridor zScore', () => {
   it('is exposed, positive, and increases with confidence', () => {

@@ -9,6 +9,7 @@ import {
   calculateReturns,
   perCandleParkinson,
   qlike,
+  probit,
   studentTProbit,
   profileStudentTDf,
   empiricalQuantile,
@@ -407,25 +408,69 @@ function fitModel(candles: Candle[], periodsPerYear: number, steps: number): Fit
 }
 
 /**
- * Corridor multiplier for a two-sided confidence level.
+ * |h-step standardized sum| sample: |Σr| / √(Σσ²) over overlapping windows
+ * of the post-warm-up region. This is the h-step analog of fit.absZ — it
+ * absorbs whatever the single-period model misses about aggregation
+ * (volatility autocorrelation, Jensen bias in EGARCH multi-step, fat tails
+ * washing out by CLT).
+ */
+function horizonAbsZ(fit: FitResult, steps: number): number[] {
+  const { returns, varianceSeries, warmup } = fit;
+  const out: number[] = [];
+
+  for (let t = warmup; t + steps <= returns.length; t++) {
+    let sumR = 0;
+    let sumV = 0;
+    let ok = true;
+    for (let j = 0; j < steps; j++) {
+      const v = varianceSeries[t + j];
+      if (!(v > 0) || !isFinite(v)) {
+        ok = false;
+        break;
+      }
+      sumR += returns[t + j];
+      sumV += v;
+    }
+    if (!ok) continue;
+    const z = Math.abs(sumR) / Math.sqrt(sumV);
+    if (isFinite(z)) out.push(z);
+  }
+
+  out.sort((a, b) => a - b);
+  return out;
+}
+
+/**
+ * Corridor multiplier for a two-sided confidence level at horizon `steps`.
  *
  * Instead of trusting the fitted Student-t shape outright, the multiplier
- * is anchored to the data: the empirical quantile of |z_t| is used where
- * the sample actually supports the requested tail, and the t(df) quantile
- * takes over as the tail runs out of observations. The blend weight is the
- * expected number of tail exceedances m = n·(1−confidence) shrunk by a
- * prior weight of 10 pseudo-observations — no fixed distributional shape,
- * no hand-picked z table.
+ * is anchored to the data: the empirical quantile of the |standardized
+ * (h-step) return| is used where the sample actually supports the requested
+ * tail, and the model quantile takes over as the tail runs out of
+ * observations. The blend weight is the expected number of tail exceedances
+ * m = n_eff·(1−confidence) shrunk by a prior weight of 10 pseudo-
+ * observations; overlapping h-step windows are discounted by 1/steps.
+ *
+ * The model half relaxes from t(df) toward Gaussian as the horizon grows:
+ * the excess kurtosis of a sum of h shocks decays as 1/h, so a single-period
+ * fat-tail quantile applied to a multi-step corridor would be too narrow in
+ * the center (measured: 68% band covered only ~55% at 10 steps) and too
+ * wide in the tails.
  */
-function corridorZ(fit: FitResult, confidence: number): number {
-  const zModel = studentTProbit(confidence, fit.df);
-  const n = fit.absZ.length;
+function corridorZ(fit: FitResult, confidence: number, steps = 1): number {
+  const zGauss = probit(confidence);
+  const zT = studentTProbit(confidence, fit.df);
+  const zModel = steps === 1 ? zT : zGauss + (zT - zGauss) / steps;
+
+  const absZ = steps === 1 ? fit.absZ : horizonAbsZ(fit, steps);
+  const n = absZ.length;
   if (n < 50) return zModel;
 
-  const zEmpirical = empiricalQuantile(fit.absZ, confidence);
+  const zEmpirical = empiricalQuantile(absZ, confidence);
   if (!isFinite(zEmpirical)) return zModel;
 
-  const tailCount = n * (1 - confidence);
+  const effN = n / steps; // overlap discount
+  const tailCount = effN * (1 - confidence);
   const w = tailCount / (tailCount + 10);
   return w * zEmpirical + (1 - w) * zModel;
 }
@@ -490,10 +535,10 @@ export function predict(
  * Forecast expected price range over multiple candles.
  *
  * Cumulative σ = √(σ₁² + σ₂² + ... + σₙ²) — total expected move over N periods.
- * Uses log-normal price bands P·exp(±z·σ) with the same data-calibrated z
- * as predict(). The single-period tail shape is applied to the multi-step
- * horizon too — aggregated returns are closer to Gaussian, so this errs on
- * the wide (safe) side in tails.
+ * Uses log-normal price bands P·exp(±z·σ) where z is calibrated at the
+ * requested horizon: the empirical quantile of |h-step standardized sums|
+ * from the sample itself, blended with a model quantile that relaxes from
+ * t(df) toward Gaussian as aggregation washes the fat tails out.
  * @param confidence — two-sided probability in (0,1). Default ≈0.6827 (±1σ).
  */
 export function predictRange(
@@ -504,8 +549,12 @@ export function predictRange(
   confidence = 0.6827,
 ): PredictionResult {
   assertMinCandles(candles, interval);
+  if (!Number.isFinite(steps) || steps < 1) {
+    throw new Error(`steps must be a number >= 1, got ${steps}`);
+  }
+  steps = Math.floor(steps);
   const fit = fitModel(candles, INTERVALS_PER_YEAR[interval], steps);
-  const z = corridorZ(fit, confidence);
+  const z = corridorZ(fit, confidence, steps);
 
   currentPrice = currentPrice || candles[candles.length - 1].close;
 
@@ -544,9 +593,14 @@ export interface BacktestStats {
 /**
  * Walk-forward calibration statistics for predict.
  *
- * Refits the model at every step on a rolling window (75% of candles,
- * min MIN_CANDLES) and checks whether the next close lands inside the
- * predicted corridor. A well-calibrated tool has hitRate ≈ confidence·100.
+ * Refits the model on a rolling window (75% of candles, min MIN_CANDLES)
+ * and checks whether the next close lands inside the predicted corridor.
+ * A well-calibrated tool has hitRate ≈ confidence·100.
+ *
+ * Every refit costs a full 5-model calibration, so by default the test
+ * points are subsampled to at most ~100 refits (stride grows with the test
+ * span). Pass `stride: 1` to evaluate every candle when runtime is not a
+ * concern, or any positive stride to control the trade-off yourself.
  * Throws if not enough candles for the given interval.
  * @param confidence — two-sided probability in (0,1) for the prediction band.
  *   Default ≈0.6827 (±1σ).
@@ -555,6 +609,7 @@ export function backtestStats(
   candles: Candle[],
   interval: CandleInterval,
   confidence = 0.6827,
+  options: { stride?: number } = {},
 ): BacktestStats {
   assertMinCandles(candles, interval);
 
@@ -564,10 +619,14 @@ export function backtestStats(
       `Need at least ${window + 2} candles to backtest ${interval} interval, got ${candles.length}`,
     );
   }
+
+  const testSpan = candles.length - 1 - window;
+  const stride = Math.max(1, Math.floor(options.stride ?? Math.ceil(testSpan / 100)));
+
   let hits = 0;
   let total = 0;
 
-  for (let i = window; i < candles.length - 1; i++) {
+  for (let i = window; i < candles.length - 1; i += stride) {
     const slice = candles.slice(i - window, i + 1);
     const predicted = predict(slice, interval, slice[slice.length - 1].close, confidence);
     const actual = candles[i + 1].close;
@@ -599,7 +658,7 @@ export function backtest(
 ): boolean {
   assertMinCandles(candles, interval);
   if (requiredPercent <= 0) return true;
-  if (requiredPercent >= 100) return false;
+  if (requiredPercent > 100) return false;
 
   return backtestStats(candles, interval, confidence).hitRate >= requiredPercent;
 }
